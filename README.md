@@ -6,7 +6,7 @@ The Tree Height Mapper is a Google Earth Engine 🌎⛰️🌳🌲web applicatio
 The GEDI mission can monitor nearest Earth's forests through widespread laser shots of ~25 m of diameters (between 51.6° N and >51.6° S). 
 
   - Web App: https://code.earthengine.google.com/
-  - Github: https://github.com/Cesarito2021/Global-Tree-height-Mapper
+  - Github: [https://github.com/Cesarito2021/Global-Tree-height-Mapper](https://github.com/Cesarito2021/TH-GEE.git)
 
 ## Vision
 The vision of the TH-GEE web app is to be the leading platform for accessing high-resolution tree height maps of Earth's forests. We aim to empower individuals, organisations, and researchers worldwide with the tools and data they need to make informed decisions, protect forests, and address critical environmental challenges.
