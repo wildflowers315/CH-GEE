@@ -1,5 +1,5 @@
 # Tree-height-Mapper
-
+<img width="960" alt="FIG_1" src="https://github.com/Cesarito2021/TH-GEE/assets/81155556/001c297c-81f8-47d0-8d8b-c2fcca6d7bbe">
 ## Overview
 The Global Tree Height Mapper is a Google Earth Engine 🌎⛰️🌳🌲web application combining Global Ecosystem Dynamics Investigation (GEDI) with Sentinel 1 and Sentinel 2 and topgraphical data. 
 The GEDI mission can monitor nearest Earth's forests through widespread laser shots of ~25 m of diameters (GEDI-Level-2 product). 
