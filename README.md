@@ -2,14 +2,14 @@
 ![FigureAs](https://github.com/Cesarito2021/TH-GEE/assets/81155556/6004f5b0-63ce-4338-96c9-c128eee32519)
 
 ## Overview
-The Global Tree Height Mapper is a Google Earth Engine 🌎⛰️🌳🌲web application combining Global Ecosystem Dynamics Investigation (GEDI) with Sentinel 1 and Sentinel 2 and topgraphical data. 
-The GEDI mission can monitor nearest Earth's forests through widespread laser shots of ~25 m of diameters (GEDI-Level-2 product). 
+The Tree Height Mapper is a Google Earth Engine 🌎⛰️🌳🌲web application (TH-GEE) combining Global Ecosystem Dynamics Investigation (GEDI) data with Sentinel 1 and Sentinel 2 atopographical data. 
+The GEDI mission can monitor nearest Earth's forests through widespread laser shots of ~25 m of diameters (between 51.6° N and >51.6° S). 
 
   - Web App: https://code.earthengine.google.com/
   - Github: https://github.com/Cesarito2021/Global-Tree-height-Mapper
 
 ## Vision
-The vision of the TH-GEE web app is to be the leading platform for accessing high-resolution tree height maps of Earth's forests. We aim to empower individuals, organizations, and researchers worldwide with the tools and data they need to make informed decisions, protect forests, and address critical environmental challenges.
+The vision of the TH-GEE web app is to be the leading platform for accessing high-resolution tree height maps of Earth's forests. We aim to empower individuals, organisations, and researchers worldwide with the tools and data they need to make informed decisions, protect forests, and address critical environmental challenges.
 
 ## Developers
 1. Alvites Cesar
@@ -20,7 +20,7 @@ The vision of the TH-GEE web app is to be the leading platform for accessing hig
 ## Acknowledgment
 This GEE application was initially conceived during the 2nd edition Google Earth Engine Summer School organized by the Laboratory of Forest Geomatics, University of florence (September).
 
-# Tree Height Mapper configuration
+# TH-GEE web application configuration
 ## Input/Output options
 Study Area Definition: Users can define the study area by either 1) drawing it manually or 2) uploading a polygon or points shapefile. For projection details, users can refer to the official GEE guide.
 ## Choose Forest Mask (Optional)
