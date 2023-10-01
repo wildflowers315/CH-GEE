@@ -1,5 +1,10 @@
 # Tree-height-Mapper
-![FigureAs](https://github.com/Cesarito2021/TH-GEE/assets/81155556/6004f5b0-63ce-4338-96c9-c128eee32519)
+
+## Logo for the Tree Height Mapper Google Earth Engine web application
+
+## Interface
+
+<img width="960" alt="FIG_1" src="https://github.com/Cesarito2021/TH-GEE/assets/81155556/699fdee1-fc6f-4637-872d-cb279a912be9">
 
 ## Overview
 The Tree Height Mapper is a Google Earth Engine 🌎⛰️🌳🌲web application (TH-GEE) combining Global Ecosystem Dynamics Investigation (GEDI) data with Sentinel 1 and Sentinel 2 atopographical data. 
