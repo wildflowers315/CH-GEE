@@ -1,4 +1,4 @@
-# Tree-height-Mapper
+# Canopy Height Mapper
 ## Logo for the Canopy Height Mapper Google Earth Engine (CH-GEE) web app.
 ![RES_LOGO_4](https://github.com/Cesarito2021/TH-GEE/assets/81155556/65470bbe-32ab-48be-bc24-159cd73ee3da)
 ## Interface
