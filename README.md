@@ -25,11 +25,11 @@ This GEE application was initially conceived during the 2nd edition Google Earth
 
 # CH-GEE web application configuration
 ## Input/Output options
-Study Area Definition: Users can define the area of interest (AOI) by either 1) drawing it manually or 2) uploading a polygon in format Shapefile. For projection details, users can refer to the official GEE guide.
+Area of Interest (AOI) definition: Users can define the AOI by either 1) drawing it manually or 2) uploading a polygon in format Shapefile. For projection details, users can refer to the official GEE guide.
 ## Choose Forest Mask 
 Users can select one of the three options for forest masks available in the CH-GEE web app: 1.Forest mask available at "GOOGLE/DYNAMICWORLD/V1" and 2. Forest mask available at "JAXA/ALOS/PALSAR/YEARLY/FNF". In contrast, the CH-GEE will assume that the full AOI is covered by forest.
 ## Choose GEDI Canopy Heights 
-Users can select between 1) single GEDI Rh metric ranging from 1% to 100%, or 2) The average GEDI Rh metric among 75%, 90%, 95%, and 100%.
+Users can select between 1) single GEDI Relative Height (Rh; m) metric ranging from 1% to 100%, or 2) The average GEDI Rh metric among 75%, 90%, 95%, and 100%.
 ## Choose Machine Learning (ML) Algorithm
 Users can pick from 1) Random Forests (RF), 2) Gradient Tree Boosting (GB), and 3) Classification and Regression Trees (CART). Hyperparameters for RF include the number of decision trees (numberOfTrees), variables per split (variablesPerSplit), minimum training samples in each leaf node (minLeafPopulation), input fraction for bagging per tree (bagFraction), and maximum leaf nodes per tree (maxNodes). For GB, parameters encompass the number of decision trees (numberOfTrees), learning rate (shrinkage), sampling rate for stochastic tree boosting (samplingRate), maximum leaf nodes per tree (maxNodes), and loss function for regression (loss). CART parameters include maximum leaf nodes per tree (maxNodes) and minimum training samples in each leaf node (minLeafPopulation).
 ## Set period for Sentinel 1/2 collection 
