@@ -1,15 +1,14 @@
-# Canopy Height Mapper
-## Logo for the Canopy Height Mapper Google Earth Engine (CH-GEE) web app.
-![RES_LOGO_4](https://github.com/Cesarito2021/TH-GEE/assets/81155556/65470bbe-32ab-48be-bc24-159cd73ee3da)
-## Interface
-<img width="960" alt="FIG_1" src="https://github.com/Cesarito2021/TH-GEE/assets/81155556/699fdee1-fc6f-4637-872d-cb279a912be9">
+# Canopy Height Mapper - Google Earth Engine
+## User Interface
+![Image](https://github.com/user-attachments/assets/ee1e953b-e45a-46e5-a793-dab78453429c)
+## Background and Access
+Accessing the Canopy Height Google Earth Engine App to access the CH-GEE app click on [CH-GEE App](https://ee-calvites1990.projects.earthengine.app/view/ch-gee).
+To export large CH-GEE maps, users can compute GEE code accessed on [CH-GEE Code](https://code.earthengine.google.com/?accept_repo=users/calvites1990/CH-GEE). 
+To understand how to use the GEE web app, please check the tutorial video accessed via the [CH-GEE tutorial video](https://www.youtube.com/watch?v=0FkrbyENeB4).
 
 ## Overview
 The Canopy Height Mapper is a Google Earth Engine 🌎⛰️🌳🌲web application (CH-GEE) combining Global Ecosystem Dynamics Investigation (GEDI) data with Sentinel 1/2 and topographical data. 
 The GEDI mission can monitor nearest Earth's forests through widespread laser shots of ~25 m of diameters (between 51.6° N and >51.6° S). 
-
-  - Web App: https://code.earthengine.google.com/
-  - Github: (https://github.com/Cesarito2021/TH-GEE.git)
 
 ## Vision
 The vision of the CH-GEE web app is to be the leading platform for accessing high-resolution Canopy Height maps of Earth's forests. We aim to empower individuals, organisations, and researchers worldwide with the tools and data they need to make informed decisions, protect forests, and address critical environmental challenges.
@@ -17,6 +16,7 @@ The vision of the CH-GEE web app is to be the leading platform for accessing hig
 ## Tutorial 
 Note: if the area of interest is larger than 10,000 grid dimension and the GeoTIFF file exceeds 32 MB, please follow this code:
 
+### Step 1: Setting the CH-GEE function
 ```javascript
 // ***************** Run CH-GEE code ***********************
 var aoi = yourAOI; // Define your area of interest
@@ -55,7 +55,28 @@ var CH_GEE = library.CanopyHeightMapper(
 Map.centerObject(aoi, 14);
 // ******************************************************
 ```
+### Step 2: Export the generated CH-GEE map
 
+```javascript
+// ***************** Export CH-GEE code ***********************
+var CHMap = ee.Image(ee.List(CH_GEE).get(0))
+Export.image.toDrive({
+image:CHMap,
+description: "CHMap",
+folder: "ee_drive",
+region: aoi,
+scale:10,
+maxPixels:1e13,
+crs:"EPSG:4325"
+})
+// ***************** End ***********************
+```
+## Reference
+#### CH-GEE performance assessment at local scale 
+Alvites, C., O’Sullivan, H., Francini, S., Marchetti, M., Santopuoli, G., Chirici, G., ... & Bazzato, E. (2024). High-Resolution Canopy Height Mapping: Integrating NASA’s Global Ecosystem Dynamics Investigation (GEDI) with Multi-Source Remote Sensing Data. Remote Sensing, 16(7), 1281.
+
+#### CH-GEE performance assessment at regional and national scale
+Alvites, C., O'Sullivan, H., Francini, S., Marchetti, M., Santopuoli, G., Chirici, G., ... & Bazzato, E. (2025). Canopy height Mapper: A google earth engine application for predicting global canopy heights combining GEDI with multi-source data. Environmental Modelling & Software, 183, 106268.
 ## Developers
 1. Alvites Cesar
 2. Bazzato Erika
