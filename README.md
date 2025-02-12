@@ -14,6 +14,48 @@ The GEDI mission can monitor nearest Earth's forests through widespread laser sh
 ## Vision
 The vision of the CH-GEE web app is to be the leading platform for accessing high-resolution Canopy Height maps of Earth's forests. We aim to empower individuals, organisations, and researchers worldwide with the tools and data they need to make informed decisions, protect forests, and address critical environmental challenges.
 
+## Tutorial 
+Note: if the area of interest is larger than 10,000 grid dimension and the GeoTIFF file exceeds 32 MB, please follow this code:
+
+```javascript
+// ***************** Run CH-GEE code ***********************
+var aoi = yourAOI; // Define your area of interest
+
+// Import the CH-GEE library
+var library = require("users/calvites1990/CH-GEE:CH-GEE_main");
+
+// Configure the CanopyHeightMapper function
+var CH_GEE = library.CanopyHeightMapper(
+  aoi,          // Area of Interest (AOI)
+  2019,         // YYYY - Sentinel collection year
+  "06-01",      // MM-DD of start Sentinel collection
+  "08-31",      // MM-DD of end Sentinel collection
+  "2019-01-01", // YYYY-MM-DD of start GEDI collection
+  "2020-01-01", // YYYY-MM-DD of end GEDI collection
+  70,           // Cloud coverage percentage ("70")
+  "rh95",       // GEDI metric, e.g., "rh95"
+  "RF",         // Model type: "RF" (Random Forest), "GBM" (Gradient Boosting Machine), or "CART" (Classification and Regression Trees)
+  "FNF",        // Forest mask: "FNF" or "DW"
+  "singleGEDI", // GEDI processing type: "SingleGEDI" or "meanGEDI"
+  500,          // Number of trees in Random Forest model (NumTreesRF)
+  5,            // Split ratio in Random Forest model (varSplitRF)
+  1,            // Minimum leaf population in Random Forest model (minLeafPopuRF)
+  0.5,          // Bagging fraction in Random Forest model (bagFracRF)
+  5,            // Maximum number of nodes in Random Forest model (maxNodesRF)
+  "null",       // Number of trees in GBM model (numTreesGBM)
+  "null",       // Shrinkage rate in GBM model (shrGBM)
+  "null",       // Learning rate in GBM model (samLingRateGBM)
+  "null",       // Maximum number of nodes in GBM model (maxNodesGBM)
+  "null",       // Loss function in GBM model (lossGBM)
+  "null",       // Maximum number of nodes in CART model (maxNodesCART)
+  "null"        // Minimum leaf population in CART model (minLeafPopCART)
+);
+
+// ***************** Zoom to CH-GEE map *****************    
+Map.centerObject(aoi, 14);
+// ******************************************************
+```
+
 ## Developers
 1. Alvites Cesar
 2. Bazzato Erika
