@@ -26,7 +26,8 @@ def canopy_height_mapper(
     max_nodes_gbm: int,
     loss_gbm: str,
     max_nodes_cart: int,
-    min_leaf_pop_cart: int
+    min_leaf_pop_cart: int,
+    training_buffer: int
 ) -> ee.Image:
     """
     Main function for canopy height mapping using Earth Engine.
@@ -55,32 +56,83 @@ def canopy_height_mapper(
         loss_gbm: Loss function for GBM
         max_nodes_cart: Maximum nodes for CART
         min_leaf_pop_cart: Minimum leaf population for CART
-    
+        training_buffer: Training buffer for sampling
+
     Returns:
         ee.Image: Classified canopy height map
     """
     # Calculate area
-    polygon_area = aoi.area({'maxError': 1})
-    polygon_area = polygon_area.divide(10000).round()
+    area_m2 = aoi.area(maxError=1)
+    area_ha = area_m2.divide(10000).round().getInfo()
+    print(f"Area of the AOI: {area_ha} hectares")
     
     # Import required modules
-    from .l2a_gedi_source import get_gedi_data
-    from .sentinel1_source import get_sentinel1_data
-    from .sentinel2_source import get_sentinel2_data
-    from .for_forest_masking import apply_forest_mask
-    from .random_sampling import create_training_data
+    from l2a_gedi_source import get_gedi_data
+    from sentinel1_source import get_sentinel1_data
+    from sentinel2_source import get_sentinel2_data
+    from for_forest_masking import apply_forest_mask
+    from new_random_sampling import create_training_data
     
-    # Get input data
-    gedi_data = get_gedi_data(aoi, start_date_gedi, end_date_gedi, quantile)
-    s1_data = get_sentinel1_data(aoi, year, start_date, end_date)
-    s2_data = get_sentinel2_data(aoi, year, start_date, end_date, clouds_th)
+    training_aoi = aoi.buffer(training_buffer)
     
-    # Apply forest mask if needed
+    # Get GEDI data
+    print("Collecting GEDI data...")
+    gedi_data = get_gedi_data(training_aoi, start_date_gedi, end_date_gedi, quantile)
+    
+    # Check if GEDI data is empty
+    gedi_size = gedi_data.size().getInfo()
+    print(f"Number of GEDI points: {gedi_size}")
+    if gedi_size == 0:
+        raise ValueError("No GEDI data found in the area of interest")
+    
+    # Filter GEDI data to ensure it has required properties
+    gedi_data = gedi_data.filter(ee.Filter.notNull(['rh']))
+    gedi_size = gedi_data.size().getInfo()
+    print(f"Number of GEDI points with valid height data: {gedi_size}")
+    if gedi_size == 0:
+        raise ValueError("No GEDI points with valid height data found")
+    
+    # Create forest mask if needed
+    forest_mask = None
     if mask != 'none':
-        gedi_data = apply_forest_mask(gedi_data, mask)
+        try:
+            forest_mask = apply_forest_mask(training_aoi, mask, training_aoi, year, start_date, end_date)
+            print("Forest mask created successfully")
+        except Exception as e:
+            print(f"Warning: Could not create forest mask: {e}")
     
-    # Create training data
-    training_data = create_training_data(gedi_data, s1_data, s2_data)
+    # Get Sentinel data
+    print("Collecting Sentinel data...")
+    s1_data = get_sentinel1_data(training_aoi, year, start_date, end_date)
+    s2_data = get_sentinel2_data(training_aoi, year, start_date, end_date, clouds_th, training_aoi)
+    
+    # Print available bands for debugging
+    print("Sentinel-1 bands:", s1_data.bandNames().getInfo())
+    print("Sentinel-2 bands:", s2_data.bandNames().getInfo())
+    
+    # Create training data using new sampling approach
+    print("Creating training dataset...")
+    training_data = create_training_data(
+        gedi_data=gedi_data,
+        s1_data=s1_data,
+        s2_data=s2_data,
+        aoi=aoi,
+        mask=forest_mask
+    )
+    
+    # Verify training data
+    training_size = training_data.size().getInfo()
+    print(f"Number of training features created: {training_size}")
+    if training_size == 0:
+        raise ValueError("No valid training features were created")
+    
+    # Split into training and validation
+    split = 0.7
+    training = training_data.filter(ee.Filter.lt('random', split))
+    validation = training_data.filter(ee.Filter.gte('random', split))
+    
+    # Get predictor names
+    predictors = s2_data.bandNames().cat(s1_data.bandNames())
     
     # Train model based on selected type
     if model == 'RF':
@@ -90,7 +142,7 @@ def canopy_height_mapper(
             minLeafPopulation=min_leaf_pop_rf,
             bagFraction=bag_frac_rf,
             maxNodes=max_nodes_rf
-        )
+        ).setOutputMode('Regression')
     elif model == 'GBM':
         classifier = ee.Classifier.smileGradientTreeBoost(
             numberOfTrees=num_trees_gbm,
@@ -98,25 +150,27 @@ def canopy_height_mapper(
             samplingRate=sampling_rate_gbm,
             maxNodes=max_nodes_gbm,
             loss=loss_gbm
-        )
+        ).setOutputMode('Regression')
     else:  # CART
         classifier = ee.Classifier.smileCart(
             maxNodes=max_nodes_cart,
             minLeafPopulation=min_leaf_pop_cart
-        )
+        ).setOutputMode('Regression')
     
     # Train the classifier
+    print("Training the model...")
     trained_classifier = classifier.train(
-        features=training_data,
-        classProperty='height',
-        inputProperties=s1_data.bandNames().cat(s2_data.bandNames())
+        features=training,
+        classProperty='rh',
+        inputProperties=predictors
     )
     
-    # Classify the image
+    # Classify the mapping area
+    print("Classifying the mapping area...")
     classified = s1_data.addBands(s2_data).classify(trained_classifier)
     
     # Scale the output
-    classified = classified.multiply(50).round()
+    classified = classified.multiply(50).round().float()
     
     return classified
 
