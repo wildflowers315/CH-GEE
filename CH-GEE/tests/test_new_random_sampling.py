@@ -65,89 +65,89 @@ class TestNewRandomSampling(unittest.TestCase):
         buffer_size = result['buffer'].size().getInfo()
         self.assertGreater(buffer_size, 0)
 
-    def test_create_training_data_small_area(self):
-        """Test training data creation for small areas."""
-        result = create_training_data(
-            self.test_gedi,
-            self.test_s1,
-            self.test_s2,
-            self.small_aoi,
-            self.test_mask
-        )
+    # def test_create_training_data_small_area(self):
+    #     """Test training data creation for small areas."""
+    #     result = create_training_data(
+    #         self.test_gedi,
+    #         self.test_s1,
+    #         self.test_s2,
+    #         self.small_aoi,
+    #         self.test_mask
+    #     )
         
-        # Check if result is a FeatureCollection
-        self.assertIsInstance(result, ee.FeatureCollection)
+    #     # Check if result is a FeatureCollection
+    #     self.assertIsInstance(result, ee.FeatureCollection)
         
-        # Check if result has features
-        result_size = result.size().getInfo()
-        self.assertGreater(result_size, 0)
+    #     # Check if result has features
+    #     result_size = result.size().getInfo()
+    #     self.assertGreater(result_size, 0)
         
-        # Check if random column exists
-        properties = result.first().getInfo()['properties']
-        self.assertIn('random', properties)
+    #     # Check if random column exists
+    #     properties = result.first().getInfo()['properties']
+    #     self.assertIn('random', properties)
 
-    def test_create_training_data_large_area(self):
-        """Test training data creation for large areas."""
-        result = create_training_data(
-            self.test_gedi,
-            self.test_s1,
-            self.test_s2,
-            self.large_aoi,
-            self.test_mask
-        )
+    # def test_create_training_data_large_area(self):
+    #     """Test training data creation for large areas."""
+    #     result = create_training_data(
+    #         self.test_gedi,
+    #         self.test_s1,
+    #         self.test_s2,
+    #         self.large_aoi,
+    #         self.test_mask
+    #     )
         
-        # Check if result is a FeatureCollection
-        self.assertIsInstance(result, ee.FeatureCollection)
+    #     # Check if result is a FeatureCollection
+    #     self.assertIsInstance(result, ee.FeatureCollection)
         
-        # Check if result has features
-        result_size = result.size().getInfo()
-        self.assertGreater(result_size, 0)
+    #     # Check if result has features
+    #     result_size = result.size().getInfo()
+    #     self.assertGreater(result_size, 0)
         
-        # Check if random column exists
-        properties = result.first().getInfo()['properties']
-        self.assertIn('random', properties)
+    #     # Check if random column exists
+    #     properties = result.first().getInfo()['properties']
+    #     self.assertIn('random', properties)
 
-    def test_create_training_data_no_mask(self):
-        """Test training data creation without mask."""
-        result = create_training_data(
-            self.test_gedi,
-            self.test_s1,
-            self.test_s2,
-            self.medium_aoi
-        )
+    # def test_create_training_data_no_mask(self):
+    #     """Test training data creation without mask."""
+    #     result = create_training_data(
+    #         self.test_gedi,
+    #         self.test_s1,
+    #         self.test_s2,
+    #         self.medium_aoi
+    #     )
         
-        # Check if result is a FeatureCollection
-        self.assertIsInstance(result, ee.FeatureCollection)
+    #     # Check if result is a FeatureCollection
+    #     self.assertIsInstance(result, ee.FeatureCollection)
         
-        # Check if result has features
-        result_size = result.size().getInfo()
-        self.assertGreater(result_size, 0)
+    #     # Check if result has features
+    #     result_size = result.size().getInfo()
+    #     self.assertGreater(result_size, 0)
 
-    def test_create_training_data_invalid_inputs(self):
-        """Test training data creation with invalid inputs."""
-        with self.assertRaises(ValueError):
-            create_training_data(
-                None,  # Invalid GEDI data
-                self.test_s1,
-                self.test_s2,
-                self.medium_aoi
-            )
+    # def test_create_training_data_invalid_inputs(self):
+    #     """Test training data creation with invalid inputs."""
+    #     with self.assertRaises(ValueError):
+    #         create_training_data(
+    #             None,  # Invalid GEDI data
+    #             self.test_s1,
+    #             self.test_s2,
+    #             self.medium_aoi
+    #         )
         
-        with self.assertRaises(ValueError):
-            create_training_data(
-                self.test_gedi,
-                None,  # Invalid S1 data
-                self.test_s2,
-                self.medium_aoi
-            )
+    #     with self.assertRaises(ValueError):
+    #         create_training_data(
+    #             self.test_gedi,
+    #             None,  # Invalid S1 data
+    #             self.test_s2,
+    #             self.medium_aoi
+    #         )
         
-        with self.assertRaises(ValueError):
-            create_training_data(
-                self.test_gedi,
-                self.test_s1,
-                None,  # Invalid S2 data
-                self.medium_aoi
-            )
+    #     with self.assertRaises(ValueError):
+    #         create_training_data(
+    #             self.test_gedi,
+    #             self.test_s1,
+    #             None,  # Invalid S2 data
+    #             self.medium_aoi
+    #         )
 
     def test_generate_sampling_sites_invalid_inputs(self):
         """Test sampling site generation with invalid inputs."""

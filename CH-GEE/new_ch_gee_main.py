@@ -132,18 +132,25 @@ def canopy_height_mapper(
     # ***************************************************************************************************************
     #  Importing Area of Insterest (AOI) through drawing or uploading
     # ***************************************************************************************************************
-    
     aoi2 = ee.Geometry(ee.FeatureCollection(aoi).geometry())
-    training_aoi = aoi2.buffer(training_buffer)
     area_m2 = aoi2.area(maxError=1)
+    radius = area_m2.sqrt().divide(4).getInfo()
+    print(f"Radius: {radius} m")
     polygon_area = area_m2.divide(10000).round().getInfo()
-    
+    print(f"Original Polygon area: {polygon_area} ha")
+
+    training_buffer = max(training_buffer, -radius)
+    print(f"Training buffer: {training_buffer} m")
+    training_aoi = aoi2.buffer(training_buffer)
+    training_aoi_ha = training_aoi.area(maxError=1).divide(10000).round().getInfo()
+    print(f"Training AOI area: {training_aoi_ha} ha")
+    polygon_area = training_aoi_ha
     # ***************************************************************************************************************
     #  Adjusting the Visualization Settings for the AOI
     # ***************************************************************************************************************
     Map = geemap.Map()
     if polygon_area < 2000:
-        scale = 10
+        scale = 25
         Map.centerObject(aoi, 14)
     elif polygon_area >= 2000 and polygon_area < 10000:
         scale = 50
@@ -189,11 +196,12 @@ def canopy_height_mapper(
         gedi = get_gedi_data(training_aoi, start_date_gedi, end_date_gedi, quantile)
         gedi_points = gedi.sample(
             region=training_aoi,
-            scale=25,  # GEDI resolution
+            scale=scale,  # GEDI resolution
             geometries=True,
             dropNulls=True,
             seed=42
         )
+        print("GEDI data loaded from Earth Engine")
     
     gedi_points_size = gedi_points.size().getInfo()
     print(f"Number of GEDI points: {gedi_points_size}")
@@ -219,26 +227,46 @@ def canopy_height_mapper(
     # Print available bands for debugging
     print("Sentinel-1 bands:", s1.bandNames().getInfo())
     print("Sentinel-2 bands:", s2.bandNames().getInfo())
-    
-    # Get Sentinel-2 projection for consistent reprojection
+        
+    def reproject_feature(feature):
+        # Get the original geometry
+        original_geom = feature.geometry()
+        # Transform the geometry to the target projection
+        reprojected_geom = original_geom.transform(s2_projection)
+        # Return the feature with the new geometry
+        return feature.setGeometry(reprojected_geom)
+
+    # Get Sentinel-2 projection
     s2_projection = s2.projection()
+    # Reproject GEDI points to Sentinel-2 projection
+    gedi_points = gedi_points.map(reproject_feature)
+    # Check if the projection is correct
+    gedi_projection = gedi_points.first().geometry().projection()
+    print("S2 projection:", s2_projection.getInfo())
+    print("GEDI points projection:", gedi_projection.getInfo())
+    # After reprojection, check if points remain in the analysis area
+    gedi_points = gedi_points.filter(ee.Filter.bounds(training_aoi))
+    gedi_points_size_after = gedi_points.size().getInfo()
+    print(f"GEDI points after reprojection and area filter: {gedi_points_size_after}")
+    if gedi_points_size_after == 0:
+        raise ValueError("All GEDI points were outside the buffered area. Try a larger buffer value.")
     
     # Apply forest mask to GEDI points if available
-    if fnf is not None:
-        # Sample the forest mask at GEDI point locations
-        forest_mask_points = fnf.sampleRegions(
-            collection=gedi_points,
-            scale=scale,
-            projection=s2_projection,
-            tileScale=1
-        )
+    # if fnf is not None:
+    #     # Sample the forest mask at GEDI point locations
+    #     forest_mask_points = fnf.sampleRegions(
+    #         collection=gedi_points,
+    #         scale=scale,
+    #         projection=s2_projection,
+    #         tileScale=1
+    #     )
         
-        # Filter GEDI points to keep only those in forest areas
-        gedi_points = gedi_points.filter(
-            ee.Filter.equals('coordinates', forest_mask_points.filter(ee.Filter.eq('forest', 1)).get('coordinates'))
-        )
+    #     # Filter GEDI points to keep only those in forest areas
+    #     gedi_points = gedi_points.filter(
+    #         ee.Filter.equals('coordinates', forest_mask_points.filter(ee.Filter.eq('forest', 1)).get('coordinates'))
+    #     )
         
-        print(f"Number of GEDI points after forest mask: {gedi_points.size().getInfo()}")
+    #     print(f"Number of GEDI points after forest mask: {gedi_points.size().getInfo()}")
     
     # ***************************************************************************************************************
     # Global Multi-resolution Terrain Elevation Data 2010
@@ -263,6 +291,9 @@ def canopy_height_mapper(
     
     # merged = s2.addBands(gedi).addBands(dem_band_clip).addBands(s1)
     merged = s2.addBands(s1).addBands(dem_band_clip)
+    #check if the projection is correct
+    merged_projection = merged.projection()
+    print("Merged projection:", merged_projection.getInfo())
     
     # make gedi image from feature collection
     # gedi_image = gedi_points.mosaic() #.getInfo()
@@ -405,10 +436,14 @@ def canopy_height_mapper(
     # CART - Classification And Regression Trees classifier
     # GB   - Gradient Tree Boost 
     # ***************************************************************************************************************
+    # Get band names as a client-side list first
+    predictor_names_list = predictors_names.getInfo()
+    var_split_rf = ee.Number(np.sqrt(len(predictor_names_list)).round())
+    # var_split_rf = ee.Number(predictors_names.size()).sqrt().round()
     if model == "RF":
         classifier = ee.Classifier.smileRandomForest(
             numberOfTrees=ee.Number(num_trees_rf),
-            variablesPerSplit=ee.Number(var_split_rf),
+            variablesPerSplit=var_split_rf,
             minLeafPopulation=ee.Number(min_leaf_pop_rf),
             bagFraction=ee.Number(bag_frac_rf),
             maxNodes=ee.Number(max_nodes_rf)
@@ -431,6 +466,81 @@ def canopy_height_mapper(
             maxNodes=ee.Number(max_nodes_gbm)
         ).train(training, "rh", predictors_names) \
           .setOutputMode("Regression")
+    
+    # ***************************************************************************************************************
+    # Model Validation
+    # ***************************************************************************************************************
+    print("Validating model...")
+    # Apply the trained classifier to the validation data
+    validated = validation.classify(classifier)
+
+    # Calculate regression metrics
+    def calculate_metrics(observed_prediction_fc):
+        # Get the predictions and actual values
+        predictions = observed_prediction_fc.aggregate_array('classification')
+        actuals = observed_prediction_fc.aggregate_array('rh')
+        
+        # Combine into a single array for calculations
+        combined = predictions.zip(actuals)
+        
+        # Calculate difference and squared difference
+        # Fix: Access list elements by index, not with 'get'
+        diff = combined.map(lambda pair: ee.Number(ee.List(pair).get(0)).subtract(ee.Number(ee.List(pair).get(1))))
+        sq_diff = diff.map(lambda d: ee.Number(d).multiply(ee.Number(d)))
+        abs_diff = diff.map(lambda d: ee.Number(d).abs())
+        
+        # Calculate metrics
+        n = combined.size()
+        rmse = ee.Number(sq_diff.reduce(ee.Reducer.mean())).sqrt()
+        mae = ee.Number(abs_diff.reduce(ee.Reducer.mean()))
+        
+        # Calculate R²
+        mean_actual = actuals.reduce(ee.Reducer.mean())
+        total_sum_sq = actuals.map(lambda a: ee.Number(a).subtract(mean_actual).pow(2)).reduce(ee.Reducer.sum())
+        residual_sum_sq = sq_diff.reduce(ee.Reducer.sum())
+
+        # Fix: Ensure both values are explicit ee.Number objects
+        total_sum_sq = ee.Number(total_sum_sq)
+        residual_sum_sq = ee.Number(residual_sum_sq)
+        r_squared = ee.Number(1).subtract(residual_sum_sq.divide(total_sum_sq))
+        
+        # For classification metrics (if needed)
+        # We can create binary classes based on height thresholds
+        # For example, classify as "tall" if height > 10m
+        # threshold = 10
+        # actual_class = actuals.map(lambda a: ee.Number(a).gt(threshold))
+        # pred_class = predictions.map(lambda p: ee.Number(p).gt(threshold))
+        
+        # # Calculate confusion matrix components
+        # combined_class = actual_class.zip(pred_class)
+        # tp = combined_class.map(lambda pair: ee.Number(ee.List(pair).get(0)).And(ee.Number(ee.List(pair).get(1)))).reduce(ee.Reducer.sum())
+        # tn = combined_class.map(lambda pair: ee.Number(ee.List(pair).get(0)).Not().And(ee.Number(ee.List(pair).get(1)).Not())).reduce(ee.Reducer.sum())
+        # fp = combined_class.map(lambda pair: ee.Number(ee.List(pair).get(0)).Not().And(ee.Number(ee.List(pair).get(1)))).reduce(ee.Reducer.sum())
+        # fn = combined_class.map(lambda pair: ee.Number(ee.List(pair).get(0)).And(ee.Number(ee.List(pair).get(1)).Not())).reduce(ee.Reducer.sum())        
+        # # Calculate accuracy and F1 score
+        # accuracy = tp.add(tn).divide(n)
+        # precision = tp.divide(tp.add(fp))
+        # recall = tp.divide(tp.add(fn))
+        # f1_score = precision.multiply(recall).multiply(2).divide(precision.add(recall))
+        
+        # Return all metrics as a dictionary
+        return {
+            'RMSE': rmse.getInfo(),
+            'MAE': mae.getInfo(),
+            'R_squared': r_squared.getInfo(),
+            'Sample_Size': n.getInfo()
+        }
+    
+    try:
+        # Calculate and print validation metrics
+        validation_metrics = calculate_metrics(validated)
+        print("Validation Metrics:")
+        for metric, value in validation_metrics.items():
+            print(f"  {metric}: {value}")
+    except Exception as e:
+        print(f"Error calculating validation metrics: {e}")
+    
+    
     # ***************************************************************************************************************
     # Prediction of canopy heights 
     # ***************************************************************************************************************

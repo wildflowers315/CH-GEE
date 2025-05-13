@@ -28,5 +28,10 @@ hs_err_pid*
 # downloaded files
 downloads/*
 outputs/*
+*/chm_outputs*
+*/evaluation*
+*/old*
+*/old/*
+*/docs*
 
 *acquire_gedi_canopyheight.py

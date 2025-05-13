@@ -7,3 +7,9 @@ jupyter>=1.0.0
 notebook>=6.4.0
 ipywidgets>=7.6.0 
 mss
+pytest
+rasterio>=1.3.0
+tqdm>=4.65.0
+scikit-learn
+seaborn
+shapely
