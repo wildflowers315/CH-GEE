@@ -147,16 +147,43 @@ class TestCHMMain(unittest.TestCase):
     
     def test_export_tif(self):
         """Test exporting predictions to GeoTIFF."""
-        # Create mock image and geometry
+        # Create mock image with all required methods
         mock_image = MagicMock()
         mock_projection = MagicMock()
         mock_projection.getInfo.return_value = {'crs': 'EPSG:4326'}
         mock_image.projection.return_value = mock_projection
-        
-        mock_data = {
-            'B1': np.random.rand(100, 100).astype(np.float32)
+
+        # Mock select call
+        mock_image.select.return_value = mock_image
+
+        # Mock bandNames before and after selection
+        mock_image.bandNames().getInfo.side_effect = [
+            ['classification'],  # First call
+            ['canopy_height']   # After selection
+        ]
+
+        # Mock getRegion response
+        mock_data = [
+            ['id', 'longitude', 'latitude', 'time', 'canopy_height'],  # Headers with correct band name
+            [1, 13.0, 52.0, 1234567890, 15.5],
+            [2, 13.1, 52.0, 1234567890, 18.2],
+            [3, 13.0, 52.1, 1234567890, 20.1],
+            [4, 13.1, 52.1, 1234567890, 16.8]
+        ]
+
+        mock_image.getRegion().getInfo.return_value = mock_data
+
+        # Mock bounds geometry
+        mock_bounds = {
+            'coordinates': [[
+                [13.0, 52.0],
+                [13.1, 52.0],
+                [13.1, 52.1],
+                [13.0, 52.1],
+                [13.0, 52.0]
+            ]]
         }
-        mock_image.sampleRectangle.return_value.getInfo.return_value = mock_data
+        mock_image.bounds().getInfo.return_value = mock_bounds
         
         # Use the polygon AOI for testing
         aoi = ee.Geometry(self.polygon_data)
@@ -164,6 +191,13 @@ class TestCHMMain(unittest.TestCase):
         # Test export
         output_path = os.path.join(self.test_dir, 'test_predictions.tif')
         export_tif(mock_image, aoi, output_path, scale=30)
+        
+        # Verify output
+        self.assertTrue(os.path.exists(output_path))
+        with rasterio.open(output_path) as src:
+            data = src.read(1)
+            self.assertTrue(np.any(~np.isnan(data)))  # Should have valid data
+            self.assertEqual(src.crs.to_epsg(), 4326)  # Should be in WGS84
         
         # Verify output
         self.assertTrue(os.path.exists(output_path))

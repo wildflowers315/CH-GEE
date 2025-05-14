@@ -13,3 +13,4 @@ tqdm>=4.65.0
 scikit-learn
 seaborn
 shapely
+reportlab
