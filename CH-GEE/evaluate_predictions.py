@@ -7,6 +7,7 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import matplotlib.pyplot as plt
 from scipy.stats import norm
 import rasterio
+from datetime import datetime
 
 from save_evaluation_pdf import save_evaluation_to_pdf
 from raster_utils import load_and_align_rasters
@@ -161,7 +162,9 @@ def main():
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
     # date with YYYYMMDD
-    date_str = os.path.basename(pred_path).split('_')[1]
+    date = datetime.now().strftime("%Y%m%d")
+    # update output directory with date
+    output_dir = os.path.join(output_dir, date)
         
     try:
         print("Loading and preprocessing rasters...")
@@ -178,7 +181,8 @@ def main():
         valid_pixels = np.sum(mask)
         total_pixels = mask.size
         print(f"Valid pixels: {valid_pixels:,} of {total_pixels:,} ({valid_pixels/total_pixels*100:.1f}%)")
-        
+        area_ha = np.sum(mask) * (transform[0] * transform[4]) / 10000  # Convert to hectares
+        print(f"Area of valid pixels: {area_ha:.2f} ha")
         if valid_pixels == 0:
             raise ValueError("No valid pixels in intersection area")
         
@@ -214,7 +218,8 @@ def main():
                 output_dir,
                 mask=mask,
                 training_data_path=training_data_path,
-                merged_data_path=merged_data_path
+                merged_data_path=merged_data_path,
+                mask=mask, area_ha=area_ha
             )
             print(f"PDF report saved to: {pdf_path}")
         else:

@@ -12,6 +12,7 @@ from rasterio.crs import CRS
 from rasterio.warp import transform_bounds
 
 from raster_utils import load_and_align_rasters
+from evaluate_predictions import create_plots, validate_data
 
 # --- ヘルパー関数: スケーリング、コントラスト・ガンマ調整 ---
 def scale_adjust_band(band_data, min_val, max_val, contrast=1.0, gamma=1.0):
@@ -221,6 +222,12 @@ def save_evaluation_to_pdf(pred_path, ref_path, pred_data, ref_data, metrics,
     # Create 2x2 visualization grid
     grid_path = os.path.join(output_dir, 'comparison_grid.png')
     create_2x2_visualization(ref_path, pred_path, merged_data_path, grid_path, mask)
+    
+    # create plots
+    create_plots(pred_data, ref_data, metrics, output_dir)
+    
+    # validate data info
+    validate_data(pred_data, ref_data)
     
     # Get area if not provided
     if area_ha is None:

@@ -122,10 +122,12 @@ def load_and_align_rasters(pred_path: str, ref_path: str, output_dir: str = None
         target_crs = pred_src.crs
         target_shape = pred_src.shape
     
+    pred_file_name = pred_path.split('/')[-1]
+    ref_file_name = ref_path.split('/')[-1]
     # Process both rasters
     if output_dir:
-        pred_clip_path = f"{output_dir}/pred_clipped.tif"
-        ref_clip_path = f"{output_dir}/ref_clipped.tif"
+        pred_clip_path = f"{output_dir}/{pred_file_name.split('.')[0]}_clipped.tif"
+        ref_clip_path = f"{output_dir}/{ref_file_name.split('.')[0]}_clipped.tif"
     else:
         pred_clip_path = ref_clip_path = None
         
