@@ -356,18 +356,21 @@ def main():
         aspect = ee.Terrain.aspect(dem)
         dem_data = dem.addBands(slope).addBands(aspect).select(['elevation', 'slope', 'aspect'])
 
+    # Import ALOS2 sar data
+    alos2 = get_alos2_data(aoi, args.year, args.start_date, args.end_date,include_texture=False,
+                speckle_filter=False)
+    
     # ee.ImageCollection("JAXA/ALOS/AW3D30/V3_2") # Uncomment if using ALOS data
     
     # Reproject datasets to the same projection
     s2_projection = s2.projection()
-    dem_data = dem_data.reproject(s2_projection)
-    s1 = s1.reproject(s2_projection)
     # Convert to Float32
     dem_data = dem_data.reproject(s2_projection).float()  # Convert to Float32
     s1 = s1.reproject(s2_projection).float()              # Convert to Float32
     s2 = s2.float()                                       # Convert to Float32
+    alos2 = alos2.reproject(s2_projection).float()        # Convert to Float32
     # Merge datasets
-    merged = s2.addBands(s1).addBands(dem_data)
+    merged = s2.addBands(s1).addBands(dem_data).addBands(alos2)
     
     # Sample points
     reference_data = merged.sampleRegions(

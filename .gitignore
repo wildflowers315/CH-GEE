@@ -24,12 +24,13 @@ hs_err_pid*
 
 # Pycache
 *__pycache__/
+*.pytest_cache*
 
 # downloaded files
 downloads/*
 outputs/*
 */chm_outputs*
-*/evaluation*
+*/evaluation/*
 */old*
 */old/*
 */docs*

@@ -1,9 +1,8 @@
 """Module for generating PDF evaluation reports."""
 
 import os
-import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
+import numpy as np
 import rasterio
 from datetime import datetime
 from reportlab.pdfgen import canvas
@@ -12,172 +11,127 @@ from rasterio.crs import CRS
 from rasterio.warp import transform_bounds
 
 from raster_utils import load_and_align_rasters
-from evaluate_predictions import create_plots, validate_data
 
-# --- ヘルパー関数: スケーリング、コントラスト・ガンマ調整 ---
+
 def scale_adjust_band(band_data, min_val, max_val, contrast=1.0, gamma=1.0):
-    """Min/Maxスケール、コントラスト、ガンマ調整を行い、uint8に変換"""
-    # 0. NaNを一時的に特定の値（例：-9999）に置き換え（計算後元に戻す）
+    """Adjust band data with min/max scaling, contrast, and gamma."""
+    # Handle NaN values
     nan_mask = np.isnan(band_data)
     temp_nodata = -9999
     work_data = band_data.copy()
+    
     if np.any(work_data[~nan_mask] == temp_nodata):
         valid_min = np.min(work_data[~nan_mask]) if not nan_mask.all() else -1
         temp_nodata = valid_min - 1
-        print(f"警告: 一時的なNoData値 {temp_nodata} を使用します。")
 
     work_data[nan_mask] = temp_nodata
     work_data = work_data.astype(np.float32)
 
-    # 1. Min/Max スケーリング (0-1 float)
-    if max_val == min_val:
-        scaled_data = np.zeros_like(work_data, dtype=np.float32)
-    else:
-        # temp_nodata は計算に影響しないようにする (例: スケール後に処理)
-        mask_valid = (work_data != temp_nodata)
-        scaled_data = np.zeros_like(work_data, dtype=np.float32)
-        # Ensure division by zero is avoided if max_val == min_val (already handled above, but safe)
-        if max_val - min_val != 0:
-              scaled_data[mask_valid] = (work_data[mask_valid] - min_val) / (max_val - min_val)
-        else:
-              scaled_data[mask_valid] = 0 # Or handle as appropriate if max=min
-
-    # 0-1の範囲にクリッピング (temp_nodata以外)
+    # Min/Max scaling
+    mask_valid = (work_data != temp_nodata)
+    scaled_data = np.zeros_like(work_data, dtype=np.float32)
+    if max_val - min_val != 0:
+        scaled_data[mask_valid] = (work_data[mask_valid] - min_val) / (max_val - min_val)
     scaled_data[mask_valid] = np.clip(scaled_data[mask_valid], 0, 1)
 
-    # 2. コントラスト調整 (中心を0.5として調整)
+    # Contrast adjustment
     if contrast != 1.0:
         scaled_data[mask_valid] = 0.5 + contrast * (scaled_data[mask_valid] - 0.5)
-        # 再度クリッピング
         scaled_data[mask_valid] = np.clip(scaled_data[mask_valid], 0, 1)
 
-    # 3. ガンマ補正
-    if gamma != 1.0 and gamma > 0: # gammaは正の値である必要あり
-        # ガンマ補正は正の値にのみ適用
+    # Gamma correction
+    if gamma != 1.0 and gamma > 0:
         gamma_mask = mask_valid & (scaled_data > 0)
         with np.errstate(invalid='ignore'):
             scaled_data[gamma_mask] = scaled_data[gamma_mask]**(1.0 / gamma)
-        # ガンマ補正は0-1範囲を維持するはずだが念のため
         scaled_data[gamma_mask] = np.clip(scaled_data[gamma_mask], 0, 1)
-    elif gamma <= 0:
-        print(f"警告: ガンマ値 ({gamma}) は正の値である必要があります。ガンマ補正はスキップされました。")
 
-    # 4. uint8変換
-    # temp_nodataだった箇所（元々NaNだった箇所）は0にする
-    scaled_data[~mask_valid] = 0 # temp_nodata (元NaN) を 0 に
+    # Convert to uint8
+    scaled_data[~mask_valid] = 0
     scaled_uint8 = (scaled_data * 255).astype(np.uint8)
-
     return scaled_uint8
 
-def create_2x2_visualization(ref_path, pred_path, merged_path, output_path, mask=None):
-    """Create 2x2 grid with reference, prediction, difference and RGB data."""
-    # Load and align rasters
-    pred_data, ref_data, transform = load_and_align_rasters(pred_path, ref_path)
-    
-    # Calculate difference
-    diff_data = pred_data - ref_data
-    
-    # Create figure with 2x2 layout with fixed aspect ratio
-    fig, axes = plt.subplots(2, 2, figsize=(10, 10))
-    
-    # Plot reference data
-    im0 = axes[0,0].imshow(ref_data, cmap='viridis', vmin=0, vmax=50, aspect='equal')
-    axes[0,0].set_title('Reference Heights')
-    plt.colorbar(im0, ax=axes[0,0], fraction=0.046, pad=0.04)
-    
-    # Plot prediction data
-    im1 = axes[0,1].imshow(pred_data, cmap='viridis', vmin=0, vmax=50, aspect='equal')
-    axes[0,1].set_title('Predicted Heights')
-    plt.colorbar(im1, ax=axes[0,1], fraction=0.046, pad=0.04)
-    
-    # Plot difference map
-    im2 = axes[1,0].imshow(diff_data, cmap='RdYlBu', vmin=-10, vmax=10, aspect='equal')
-    axes[1,0].set_title('Height Difference (Pred - Ref)')
-    plt.colorbar(im2, ax=axes[1,0], fraction=0.046, pad=0.04)
-    
-    # Plot RGB if available
-    if merged_path and os.path.exists(merged_path):
-        try:
-            # Check if the merged file has enough bands for RGB
-            with rasterio.open(merged_path) as src:
-                band_count = src.count
+
+def load_rgb_composite(merged_path, target_shape, transform):
+    """Load and process RGB composite from merged data."""
+    merged_file_name = merged_path.split('/')[-1]
+    output_dir = os.path.dirname(merged_path)
+    merged_clipped_path = os.path.join(output_dir, f"{merged_file_name.split('.')[0]}_clipped.tif")
+        
+    try:
+        with rasterio.open(merged_path) as src:
+            if src.count >= 4:  # Need at least 4 bands for B4,B3,B2
+                # Use B4,B3,B2 for natural color (R,G,B)
+                rgb_bands = [3, 2, 1]  # 1-based band numbers
+                rgb = np.zeros((target_shape[0], target_shape[1], 3), dtype=np.float32)
                 
-                if band_count >= 3:
-                    # For Sentinel-2, use bands 2,1,0 (BGR → RGB)
-                    rgb_bands = [2, 1, 0]  # Traditional RGB order
+                from rasterio.warp import reproject, Resampling
+                for i, band in enumerate(rgb_bands):
+                    band_data = src.read(band)  # Band numbers are 1-based
+                    band_resampled = np.zeros(target_shape, dtype=np.float32)
+                    reproject(
+                        band_data,
+                        band_resampled,
+                        src_transform=src.transform,
+                        src_crs=src.crs,
+                        dst_transform=transform,
+                        dst_crs=src.crs,
+                        resampling=Resampling.bilinear
+                    )
+                    rgb[:, :, i] = band_resampled
+                
+                # Apply scaling and contrast adjustment
+                rgb_norm = np.zeros_like(rgb, dtype=np.uint8)
+                for i in range(3):
+                    rgb_norm[:,:,i] = scale_adjust_band(
+                        rgb[:,:,i], 0, 3000, contrast=1.2, gamma=0.8)
+                
+                # save the RGB composite
+                profile = src.profile.copy()
+                profile.update({
+                    'height': target_shape[0],
+                    'width': target_shape[1],
+                    'transform': transform,
+                    'count': 3,
+                    'dtype': 'uint8'
+                })
+                try:
+                    with rasterio.open(merged_clipped_path, 'w', **profile) as dst:
+                        dst.write(rgb_norm.transpose(2, 1, 0)
+                              )
+                except Exception as e:
+                    print(f"Error saving RGB composite: {e}")
                     
-                    # Create RGB composite - use same dimensions as pred_data
-                    rgb = np.zeros((pred_data.shape[0], pred_data.shape[1], 3), dtype=np.float32)
-                    
-                    for i, band in enumerate(rgb_bands):
-                        with rasterio.open(merged_path) as src:
-                            band_data = src.read(band + 1)  # +1 because rasterio uses 1-based indexing
-                            # Always resample to match prediction shape
-                            from rasterio.warp import reproject, Resampling
-                            band_resampled = np.zeros(pred_data.shape, dtype=band_data.dtype)
-                            reproject(
-                                band_data,
-                                band_resampled,
-                                src_transform=src.transform,
-                                src_crs=src.crs,
-                                dst_transform=transform,
-                                dst_crs=src.crs,
-                                resampling=Resampling.bilinear
-                            )
-                            rgb[:, :, i] = band_resampled
-                    
-                    # Normalize for Sentinel-2 display
-                    rgb_min = 0 
-                    rgb_max = 2000
-                    contrast = 1.0
-                    gamma = 1.0
-                    
-                    # Create a normalized RGB array
-                    rgb_norm = np.zeros_like(rgb, dtype=np.uint8)
-                    
-                    # Process each channel
-                    for i in range(3):
-                        rgb_norm[:,:,i] = scale_adjust_band(
-                            rgb[:,:,i], rgb_min, rgb_max, contrast, gamma)
-                    
-                    # Display with aspect='equal' to match other plots
-                    axes[1,1].imshow(rgb_norm, aspect='equal')
-                    axes[1,1].set_title('RGB Composite')
-                else:
-                    axes[1,1].set_title('RGB Not Available (Insufficient Bands)')
-                    # Add empty plot with correct aspect ratio
-                    axes[1,1].imshow(np.zeros_like(pred_data), cmap='gray', aspect='equal')
-        except Exception as e:
-            print(f"Error creating RGB composite: {e}")
-            axes[1,1].set_title('RGB Error')
-            # Add empty plot with correct aspect ratio
-            axes[1,1].imshow(np.zeros_like(pred_data), cmap='gray', aspect='equal')
-    else:
-        axes[1,1].set_title('RGB Not Available')
-        # Add empty plot with correct aspect ratio
-        axes[1,1].imshow(np.zeros_like(pred_data), cmap='gray', aspect='equal')
+                return rgb_norm
+    except Exception as e:
+        print(f"Error creating RGB composite: {e}")
+    return None
+
+
+def create_2x2_visualization(ref_data, pred_data, diff_data, merged_path, transform, output_path, mask=None):
+    """Create 2x2 grid with reference, prediction, difference and RGB data."""
     
-    # Remove axes ticks to save space
-    for ax in axes.flat:
-        ax.set_xticks([])
-        ax.set_yticks([])
+    # Load RGB composite if available
+    rgb_norm = None
+    if merged_path and os.path.exists(merged_path):
+        rgb_norm = load_rgb_composite(merged_path, pred_data.shape, transform)
     
-    # Adjust layout to prevent cut-off
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
-    plt.close()
-    
+    # Apply mask if provided
+    if mask is not None and rgb_norm is not None:
+        # Create a 3D mask by expanding dimensions
+        mask_3d = np.repeat(mask[:, :, np.newaxis], 3, axis=2)
+        # Apply mask - set masked areas to 0
+        rgb_norm = np.where(mask_3d, rgb_norm, 0)    # Create visualization grid
+        
+    from evaluation_utils import create_comparison_grid
+    create_comparison_grid(ref_data, pred_data, diff_data, rgb_norm, output_path)
     return output_path
 
 
 def get_training_info(csv_path):
     """Extract information from training data."""
     if not os.path.exists(csv_path):
-        return {
-            'sample_size': 0,
-            'band_names': [],
-            'height_range': (0, 0)
-        }
+        return {'sample_size': 0, 'band_names': [], 'height_range': (0, 0)}
         
     df = pd.read_csv(csv_path)
     bands = [col for col in df.columns if col not in ['rh', 'longitude', 'latitude']]
@@ -191,7 +145,6 @@ def get_training_info(csv_path):
 
 def calculate_area(bounds: tuple, crs: CRS):
     """Calculate area in hectares from bounds."""
-    # For geographic coordinates, convert to appropriate UTM zone
     if crs.is_geographic:
         center_lat = (bounds[1] + bounds[3]) / 2
         center_lon = (bounds[0] + bounds[2]) / 2
@@ -199,66 +152,75 @@ def calculate_area(bounds: tuple, crs: CRS):
         utm_epsg = 32600 + utm_zone + (0 if center_lat >= 0 else 100)
         utm_crs = CRS.from_epsg(utm_epsg)
         bounds = transform_bounds(crs, utm_crs, *bounds)
-        width = bounds[2] - bounds[0]
-        height = bounds[3] - bounds[1]
-        area_m2 = width * height
-    else:
-        # For projected coordinates, directly calculate area
-        width = bounds[2] - bounds[0]
-        height = bounds[3] - bounds[1]
-        area_m2 = width * height
         
-    # Convert to hectares
+    width = bounds[2] - bounds[0]
+    height = bounds[3] - bounds[1]
+    area_m2 = width * height
     return area_m2 / 10000
 
 
 def save_evaluation_to_pdf(pred_path, ref_path, pred_data, ref_data, metrics, 
                          output_dir, training_data_path=None, merged_data_path=None,
-                         mask=None, area_ha=None):
+                         mask=None, area_ha=None, validation_info=None, plot_paths=None):
     """Create PDF report with evaluation results."""
-    # Create output directory
     os.makedirs(output_dir, exist_ok=True)
     
-    # Create 2x2 visualization grid
+    # Calculate difference for visualization
+    diff_data = pred_data - ref_data
+    
+    # Create comparison grid visualization
     grid_path = os.path.join(output_dir, 'comparison_grid.png')
-    create_2x2_visualization(ref_path, pred_path, merged_data_path, grid_path, mask)
-    
-    # create plots
-    create_plots(pred_data, ref_data, metrics, output_dir)
-    
-    # validate data info
-    validate_data(pred_data, ref_data)
+    with rasterio.open(pred_path) as src:
+        transform = src.transform
+    create_2x2_visualization(ref_data, pred_data, diff_data, merged_data_path, transform, grid_path, mask)
     
     # Get area if not provided
     if area_ha is None:
         with rasterio.open(pred_path) as src:
             area_ha = calculate_area(src.bounds, src.crs)
     
-    # Get training info if available
-    if training_data_path and os.path.exists(training_data_path):
-        train_info = get_training_info(training_data_path)
-    else:
-        train_info = {'sample_size': 0, 'band_names': [], 'height_range': (0, 0)}
+    # Get training info
+    train_info = get_training_info(training_data_path) if training_data_path else {
+        'sample_size': 0, 'band_names': [], 'height_range': (0, 0)
+    }
     
-    # Format filename with date and area
+    # Create PDF
     date = datetime.now().strftime("%Y%m%d")
     n_bands = len(train_info['band_names']) if train_info['band_names'] else 'X'
     pdf_name = f"{date}_b{n_bands}_{int(area_ha)}ha.pdf"
     pdf_path = os.path.join(output_dir, pdf_name)
     
-    # Create PDF with multiple pages if needed
+    # Initialize PDF
     c = canvas.Canvas(pdf_path, pagesize=letter)
     width, height = letter
     
-    # First page - Info and metrics
-    # Add title
+    # First page - Summary information
     c.setFont("Helvetica-Bold", 16)
     c.drawString(50, height-50, "Canopy Height Model Evaluation Report")
     c.setFont("Helvetica", 12)
     c.drawString(50, height-70, f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     
-    # Add training data info
+    # Add validation info
     y = height-100
+    if validation_info:
+        c.setFont("Helvetica-Bold", 12)
+        c.drawString(50, y, "Data Statistics:")
+        c.setFont("Helvetica", 10)
+        y -= 15
+        c.drawString(70, y, "Prediction Data:")
+        y -= 15
+        c.drawString(90, y, f"Range: {validation_info['pred_range'][0]:.2f}m to {validation_info['pred_range'][1]:.2f}m")
+        y -= 15
+        c.drawString(90, y, f"Mean: {validation_info['pred_stats']['mean']:.2f}m, Std: {validation_info['pred_stats']['std']:.2f}m")
+        y -= 15
+        c.drawString(70, y, "Reference Data:")
+        y -= 15
+        c.drawString(90, y, f"Range: {validation_info['ref_range'][0]:.2f}m to {validation_info['ref_range'][1]:.2f}m")
+        y -= 15
+        c.drawString(90, y, f"Mean: {validation_info['ref_stats']['mean']:.2f}m, Std: {validation_info['ref_stats']['std']:.2f}m")
+        y -= 25
+    
+    # Add training info
     c.setFont("Helvetica-Bold", 12)
     c.drawString(50, y, "Training Data:")
     c.setFont("Helvetica", 10)
@@ -290,26 +252,38 @@ def save_evaluation_to_pdf(pred_path, ref_path, pred_data, ref_data, metrics,
             c.drawString(70, y, f"{metric}: {value:,.3f}")
         y -= 15
     
-    # Add note about visualization
-    y -= 25
-    c.setFont("Helvetica-Oblique", 10)
-    c.drawString(50, y, "See next page for visualization grid")
-    
-    # Save current page and start a new one for the visualization
     c.showPage()
     
-    # Second page - Full-page visualization grid
-    # Add a title to the second page
+    # Second page - Comparison grid
     c.setFont("Helvetica-Bold", 14)
     c.drawString(50, height-40, "Canopy Height Model Comparison Grid")
     
-    # Position the grid to use most of the page
     if os.path.exists(grid_path):
-        # Allow more space for the grid by using most of the page
-        grid_height = height - 80  # Leave space for the title
-        grid_width = width - 100   # Leave margins
+        grid_height = height - 80
+        grid_width = width - 100
         c.drawImage(grid_path, 50, height-grid_height-40, width=grid_width, height=grid_height, preserveAspectRatio=True)
     
-    # Save and close the PDF
+    c.showPage()
+    
+    # Third page - Analysis plots
+    if plot_paths:
+        c.setFont("Helvetica-Bold", 14)
+        c.drawString(50, height-40, "Detailed Analysis")
+        
+        y = height - 60
+        plot_height = (height - 100) / 2
+        
+        if os.path.exists(plot_paths.get('scatter', '')):
+            c.drawImage(plot_paths['scatter'], 50, y-plot_height, width=width/2-60, height=plot_height, preserveAspectRatio=True)
+        
+        if os.path.exists(plot_paths.get('error_hist', '')):
+            c.drawImage(plot_paths['error_hist'], width/2, y-plot_height, width=width/2-60, height=plot_height, preserveAspectRatio=True)
+        
+        if os.path.exists(plot_paths.get('height_dist', '')):
+            y -= plot_height + 20
+            c.drawImage(plot_paths['height_dist'], width/4, y-plot_height, width=width/2-60, height=plot_height, preserveAspectRatio=True)
+        
+        c.showPage()
+    
     c.save()
     return pdf_path

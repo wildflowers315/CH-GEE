@@ -4,13 +4,14 @@ import os
 import numpy as np
 import argparse
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-import matplotlib.pyplot as plt
-from scipy.stats import norm
 import rasterio
 from datetime import datetime
+from rasterio.crs import CRS
+from rasterio.warp import transform_bounds
 
 from save_evaluation_pdf import save_evaluation_to_pdf
 from raster_utils import load_and_align_rasters
+from evaluation_utils import validate_data, create_plots
 
 
 def check_predictions(pred_path: str):
@@ -22,31 +23,6 @@ def check_predictions(pred_path: str):
             print("Please ensure the prediction generation completed successfully.")
             return False
         return True
-
-
-def validate_data(pred_data: np.ndarray, ref_data: np.ndarray):
-    """Validate data before analysis."""
-    # Check for zero variance
-    pred_std = np.std(pred_data)
-    if pred_std == 0:
-        raise ValueError("Prediction data has zero variance (all values are the same). " +
-                        f"All values are {pred_data[0]:.2f}")
-    
-    ref_std = np.std(ref_data)
-    if ref_std == 0:
-        raise ValueError("Reference data has zero variance (all values are the same). " +
-                        f"All values are {ref_data[0]:.2f}")
-    
-    # Check for reasonable value ranges
-    if np.max(pred_data) < 0.01:
-        raise ValueError(f"Prediction values seem too low. Max value is {np.max(pred_data):.6f}")
-    
-    if np.max(ref_data) < 0.01:
-        raise ValueError(f"Reference values seem too low. Max value is {np.max(ref_data):.6f}")
-    
-    print("Data validation passed:")
-    print(f"Prediction range: {np.min(pred_data):.2f} to {np.max(pred_data):.2f}")
-    print(f"Reference range: {np.min(ref_data):.2f} to {np.max(ref_data):.2f}")
 
 
 def calculate_metrics(pred: np.ndarray, ref: np.ndarray):
@@ -81,61 +57,6 @@ def calculate_metrics(pred: np.ndarray, ref: np.ndarray):
     }
 
 
-def create_plots(pred: np.ndarray, ref: np.ndarray, metrics: dict, output_dir: str):
-    """Create evaluation plots."""
-    # Scatter plot
-    plt.figure(figsize=(10, 10))
-    plt.scatter(ref, pred, alpha=0.5, s=1)
-    plt.plot([0, max(ref.max(), pred.max())], [0, max(ref.max(), pred.max())], 'r--', label='1:1 line')
-    
-    # Add trend line
-    z = np.polyfit(ref, pred, 1)
-    p = np.poly1d(z)
-    plt.plot(ref, p(ref), 'b--', label=f'Trend line (y = {z[0]:.3f}x + {z[1]:.3f})')
-    
-    plt.xlabel('Reference Height (m)')
-    plt.ylabel('Predicted Height (m)')
-    plt.title('Predicted vs Reference Height\n' + \
-             f'R² = {metrics["R2"]:.3f}, RMSE = {metrics["RMSE"]:.3f}m')
-    plt.legend()
-    plt.grid(True)
-    plt.savefig(os.path.join(output_dir, 'scatter_plot.png'), dpi=300, bbox_inches='tight')
-    plt.close()
-    
-    # Error histogram
-    errors = pred - ref
-    plt.figure(figsize=(10, 6))
-    plt.hist(errors, bins=50, alpha=0.75, density=True)
-    plt.axvline(x=0, color='r', linestyle='--', label='Zero Error')
-    
-    # Add normal distribution curve
-    xmin, xmax = plt.xlim()
-    x = np.linspace(xmin, xmax, 100)
-    p = norm.pdf(x, errors.mean(), errors.std())
-    plt.plot(x, p, 'k--', label='Normal Distribution')
-    
-    plt.xlabel('Prediction Error (m)')
-    plt.ylabel('Density')
-    plt.title(f'Error Distribution\n' + \
-             f'Mean = {errors.mean():.3f}m, Std = {errors.std():.3f}m')
-    plt.legend()
-    plt.grid(True)
-    plt.savefig(os.path.join(output_dir, 'error_hist.png'), dpi=300, bbox_inches='tight')
-    plt.close()
-    
-    # Height distributions
-    plt.figure(figsize=(10, 6))
-    plt.hist(ref, bins=50, alpha=0.5, label='Reference', density=True)
-    plt.hist(pred, bins=50, alpha=0.5, label='Predicted', density=True)
-    plt.xlabel('Height (m)')
-    plt.ylabel('Density')
-    plt.title('Height Distributions')
-    plt.legend()
-    plt.grid(True)
-    plt.savefig(os.path.join(output_dir, 'height_distributions.png'), dpi=300, bbox_inches='tight')
-    plt.close()
-
-
 def main():
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Evaluate canopy height predictions against reference data')
@@ -155,18 +76,19 @@ def main():
     training_data_path = args.training if os.path.exists(args.training) else None
     merged_data_path = args.merged if args.merged and os.path.exists(args.merged) else None
     
-    # First check if predictions are valid
-    if not check_predictions(pred_path):
-        return
-    
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
-    # date with YYYYMMDD
+    # Add date to output directory
     date = datetime.now().strftime("%Y%m%d")
-    # update output directory with date
     output_dir = os.path.join(output_dir, date)
-        
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # First check if predictions are valid
+    if not check_predictions(pred_path):
+        return 1
+
     try:
+        
         print("Loading and preprocessing rasters...")
         pred_data, ref_data, transform = load_and_align_rasters(pred_path, ref_path, output_dir)
         
@@ -181,33 +103,64 @@ def main():
         valid_pixels = np.sum(mask)
         total_pixels = mask.size
         print(f"Valid pixels: {valid_pixels:,} of {total_pixels:,} ({valid_pixels/total_pixels*100:.1f}%)")
-        area_ha = np.sum(mask) * (transform[0] * transform[4]) / 10000  # Convert to hectares
+        # Calculate area using geographic coordinates
+        with rasterio.open(pred_path) as src:
+            # Get the CRS of the prediction
+            if src.crs.is_geographic:
+                # For geographic coordinates, calculate approximate area using UTM
+                center_lat = (src.bounds.bottom + src.bounds.top) / 2
+                center_lon = (src.bounds.left + src.bounds.right) / 2
+                utm_zone = int((center_lon + 180) / 6) + 1
+                utm_epsg = 32600 + utm_zone + (0 if center_lat >= 0 else 100)
+                utm_crs = CRS.from_epsg(utm_epsg)
+                
+                # Transform bounds to UTM
+                bounds_utm = transform_bounds(src.crs, utm_crs, *src.bounds)
+                width_m = bounds_utm[2] - bounds_utm[0]
+                height_m = bounds_utm[3] - bounds_utm[1]
+                
+                # Calculate pixel size in meters
+                pixel_width_m = width_m / src.width
+                pixel_height_m = height_m / src.height
+                pixel_area_m2 = pixel_width_m * pixel_height_m
+            else:
+                # For projected coordinates, use transform directly
+                pixel_area_m2 = abs(transform[0] * transform[4])
+        
+        area_ha = (np.sum(mask) * pixel_area_m2) / 10000  # Convert to hectares
         print(f"Area of valid pixels: {area_ha:.2f} ha")
+        
         if valid_pixels == 0:
             raise ValueError("No valid pixels in intersection area")
         
-        # Apply masks to get valid data only
-        pred_data = pred_data[mask]
-        ref_data = ref_data[mask]
+        # Create masked copies for statistics
+        pred_masked = pred_data[mask]
+        ref_masked = ref_data[mask]
         
         # Print statistics
         print("\nStatistics for valid pixels (filtered to 0-50m range):")
         print("Prediction - Min: {:.2f}, Max: {:.2f}, Mean: {:.2f}, Std: {:.2f}".format(
-            np.min(pred_data), np.max(pred_data), np.mean(pred_data), np.std(pred_data)))
+            np.min(pred_masked), np.max(pred_masked), np.mean(pred_masked), np.std(pred_masked)))
         print("Reference - Min: {:.2f}, Max: {:.2f}, Mean: {:.2f}, Std: {:.2f}".format(
-            np.min(ref_data), np.max(ref_data), np.mean(ref_data), np.std(ref_data)))
+            np.min(ref_masked), np.max(ref_masked), np.mean(ref_masked), np.std(ref_masked)))
         
-        # Validate data
+        # Validate data and get statistics
         print("\nValidating data...")
-        validate_data(pred_data, ref_data)
+        validation_info = validate_data(pred_masked, ref_masked)
+        print("Data validation passed:")
+        print(f"Prediction range: {validation_info['pred_range'][0]:.2f} to {validation_info['pred_range'][1]:.2f}")
+        print(f"Reference range: {validation_info['ref_range'][0]:.2f} to {validation_info['ref_range'][1]:.2f}")
         
         # Calculate metrics
         print("Calculating metrics...")
-        metrics = calculate_metrics(pred_data, ref_data)
+        metrics = calculate_metrics(pred_masked, ref_masked)
         
         print("Generating visualizations...")
+        # Always generate plots for masked data
+        plot_paths = create_plots(pred_masked, ref_masked, metrics, output_dir)
+        
         if generate_pdf:
-            # Create PDF report with 2x2 visualization grid
+            # Create PDF report with all visualizations
             print("\nGenerating PDF report...")
             pdf_path = save_evaluation_to_pdf(
                 pred_path,
@@ -219,13 +172,11 @@ def main():
                 mask=mask,
                 training_data_path=training_data_path,
                 merged_data_path=merged_data_path,
-                mask=mask, area_ha=area_ha
+                area_ha=area_ha,
+                validation_info=validation_info,
+                plot_paths=plot_paths
             )
             print(f"PDF report saved to: {pdf_path}")
-        else:
-            # Generate individual plots
-            print("Generating plots...")
-            create_plots(pred_data, ref_data, metrics, output_dir)
         
         # Print results
         print("\nEvaluation Results (for heights between 0-50m):")
@@ -239,14 +190,17 @@ def main():
         
         print("\nOutputs saved to:", output_dir)
         
+        return 0
+        
     except ValueError as e:
         print(f"\nValidation Error: {str(e)}")
         print("\nPlease check that both rasters contain valid height values.")
-        raise
+        return 1
     except Exception as e:
         print(f"\nError: {str(e)}")
-        raise
+        return 1
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    sys.exit(main())
