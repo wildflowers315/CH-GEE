@@ -18,7 +18,8 @@ from rasterio.crs import CRS
 from l2a_gedi_source import get_gedi_data
 from sentinel1_source import get_sentinel1_data
 from sentinel2_source import get_sentinel2_data
-from for_forest_masking import apply_forest_mask
+from for_forest_masking import apply_forest_mask, get_forest_mask
+from alos2_source import get_alos2_data
 from new_random_sampling import create_training_data, generate_sampling_sites
 
 def load_aoi(aoi_path: str) -> ee.Geometry:
