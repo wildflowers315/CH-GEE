@@ -18,7 +18,7 @@ from rasterio.crs import CRS
 from l2a_gedi_source import get_gedi_data
 from sentinel1_source import get_sentinel1_data
 from sentinel2_source import get_sentinel2_data
-from for_forest_masking import apply_forest_mask, get_forest_mask
+from for_forest_masking import apply_forest_mask, create_forest_mask
 from alos2_source import get_alos2_data
 from new_random_sampling import create_training_data, generate_sampling_sites
 
@@ -72,6 +72,9 @@ def parse_args():
     parser.add_argument('--end-date', type=str, default='12-31', help='End date (MM-DD)')
     parser.add_argument('--clouds-th', type=float, default=65, help='Cloud threshold')
     parser.add_argument('--scale', type=int, default=30, help='Output resolution in meters')
+    parser.add_argument('--mask-type', type=str, default='NDVI',
+                       choices=['DW', 'FNF', 'NDVI', 'ALL', 'none'],
+                       help='Type of forest mask to apply')
     
     # GEDI parameters
     parser.add_argument('--gedi-start-date', type=str, help='GEDI start date (YYYY-MM-DD)')
@@ -107,7 +110,7 @@ def initialize_ee():
     EE_PROJECT_ID = "my-project-423921"
     ee.Initialize(project=EE_PROJECT_ID)
 
-def export_training_data(reference_data: ee.FeatureCollection, output_path: str):
+def export_training_data(reference_data: ee.FeatureCollection, output_dir: str):
     """Export training data as CSV."""
     # Get feature properties as a list of dictionaries
     features = reference_data.getInfo()['features']
@@ -121,171 +124,43 @@ def export_training_data(reference_data: ee.FeatureCollection, output_path: str)
         properties['latitude'] = geometry[1]
         data.append(properties)
     
+    
     # Convert to DataFrame and save
     df = pd.DataFrame(data)
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    band_length = len(df.columns) - 3  # Exclude 'rh', 'longitude' and 'latitude'
+    df_size = len(df)
+    output_path = os.path.join(output_dir, f"training_data_b{band_length}_{df_size}.csv")
+    # os.makedirs(os.path.dirname(output_path), exist_ok=True)
     df.to_csv(output_path, index=False)
     print(f"Training data exported to: {output_path}")
+    return output_path
 
-def export_tif2(image: ee.Image, aoi: ee.Geometry, output_path: str, scale: int):
-    """Export predicted canopy height map as GeoTIFF."""
-    # Get image data and projection
-    data = image.getInfo()
-    projection = image.projection().getInfo()
-    
-    # Get bounds
-    bounds = aoi.bounds().getInfo()['coordinates'][0]
-    min_lon = min(p[0] for p in bounds)
-    max_lon = max(p[0] for p in bounds)
-    min_lat = min(p[1] for p in bounds)
-    max_lat = max(p[1] for p in bounds)
-    
-    # Calculate dimensions
-    width = int((max_lon - min_lon) / (scale / 111000))  # approximately degrees to meters
-    height = int((max_lat - min_lat) / (scale / 111000))
-    
-    # Get image data as array
-    data_array = image.sampleRectangle(
-        region=aoi,
-        properties=image.bandNames(),
-        defaultValue=-9999
-    ).getInfo()
-    
-    # Find the actual band name in the data array
-    band_name = list(data_array.keys())[0]  # Get the first band name
-    
-    # Create the GeoTIFF
-    transform = from_origin(min_lon, max_lat, scale/111000, scale/111000)
-    
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    try:
-        with rasterio.open(
-            output_path,
-            'w',
-            driver='GTiff',
-            height=height,
-            width=width,
-            count=1,
-            dtype=np.float32,
-            crs=CRS.from_epsg(4326),
-            transform=transform,
-            nodata=-9999
-        ) as dst:
-            dst.write(data_array[band_name], 1)
-    except Exception as e:
-        print('Use classification band instead')
-        with rasterio.open(
-            output_path,
-            'w',
-            driver='GTiff',
-            height=height,
-            width=width,
-            count=1,
-            dtype=np.float32,
-            crs=CRS.from_epsg(4326),
-            transform=transform,
-            nodata=-9999
-        ) as dst:
-            dst.write(data_array['classification'], 1)
-    print(f"Predictions exported to: {output_path}")
-
-def export_tif(image: ee.Image, aoi: ee.Geometry, output_path: str, scale: int):
-    """Export predicted canopy height map as GeoTIFF."""
-    # Rename the classification band for clarity (optional)
-    if 'classification' in image.bandNames().getInfo():
-        image = image.select(['classification'], ['canopy_height'])
-    
-    # Get bounds
-    bounds = aoi.bounds().getInfo()['coordinates'][0]
-    min_lon = min(p[0] for p in bounds)
-    max_lon = max(p[0] for p in bounds)
-    min_lat = min(p[1] for p in bounds)
-    max_lat = max(p[1] for p in bounds)
-    
-    # Calculate dimensions
-    width = int((max_lon - min_lon) / (scale / 111000))  # approximately degrees to meters
-    height = int((max_lat - min_lat) / (scale / 111000))
-    
-    # Get image data as array using getRegion instead of sampleRectangle
-    region = aoi.bounds()
-    data = image.getRegion(region, scale).getInfo()
-    
-    # Convert the data to a numpy array
-    # The first row contains column headers
-    headers = data[0]
-    values = data[1:]
-    
-    # Find the band index (either 'classification' or the first band)
-    band_index = None
-    if 'classification' in headers:
-        band_index = headers.index('classification')
-    elif 'canopy_height' in headers:
-        band_index = headers.index('canopy_height')
-    else:
-        # Get the first band that's not id, longitude, latitude, or time
-        for i, header in enumerate(headers):
-            if header not in ['id', 'longitude', 'latitude', 'time']:
-                band_index = i
-                break
-    
-    if band_index is None:
-        raise ValueError("Could not find band data in the image")
-    
-    # Create a 2D grid to hold the data
-    grid = np.full((height, width), -9999, dtype=np.float32)
-    
-    # Extract coordinates and values
-    x_coords = [row[1] for row in values]  # longitude
-    y_coords = [row[2] for row in values]  # latitude
-    pixel_values = [row[band_index] for row in values]
-    
-    # Convert geographic coordinates to pixel coordinates
-    x_pixel = np.floor((np.array(x_coords) - min_lon) / ((max_lon - min_lon) / width)).astype(int)
-    y_pixel = np.floor((max_lat - np.array(y_coords)) / ((max_lat - min_lat) / height)).astype(int)
-    
-    # Assign values to the grid
-    for i in range(len(x_pixel)):
-        if 0 <= x_pixel[i] < width and 0 <= y_pixel[i] < height:
-            grid[y_pixel[i], x_pixel[i]] = pixel_values[i]
-    
-    # Create the GeoTIFF
-    transform = from_origin(min_lon, max_lat, (max_lon - min_lon) / width, (max_lat - min_lat) / height)
-    
-    # Create directory if it doesn't exist
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    
-    # Write the GeoTIFF
-    with rasterio.open(
-        output_path,
-        'w',
-        driver='GTiff',
-        height=height,
-        width=width,
-        count=1,
-        dtype=np.float32,
-        crs=CRS.from_epsg(4326),
-        transform=transform,
-        nodata=-9999
-    ) as dst:
-        dst.write(grid, 1)
-    
-    print(f"Predictions exported to: {output_path}")
-
-
-def export_tif_via_ee(image: ee.Image, aoi: ee.Geometry, output_path: str, scale: int):
+def export_tif_via_ee(image: ee.Image, aoi: ee.Geometry, prefix: str, scale: int):
     """Export predicted canopy height map as GeoTIFF using Earth Engine export."""
     # Rename the classification band for clarity
-    if 'classification' in image.bandNames().getInfo():
-        image = image.select(['classification'], ['canopy_height'])
+    # if 'classification' in image.bandNames().getInfo():
+    #     image = image.select(['classification'], ['canopy_height'])
+    band_count = image.bandNames().size().getInfo()
+    # Get the first band name
+    first_band = image.bandNames().get(0)
+    region = image.geometry().bounds()
+    info = image.select(first_band).reduceRegion(
+        reducer=ee.Reducer.count(),
+        geometry=region,
+        scale=10,
+        maxPixels=1e13
+    )
+    pixel_count = info.get(first_band)
     
     # Generate a unique task ID
-    task_id = f"chm_export_{int(time.time())}"
+    task_id = f"{prefix}_b{band_count}_s{scale}_p{pixel_count}"
     
     # Set export parameters
     export_params = {
         'image': image,
         'description': task_id,
         'fileNamePrefix': task_id,
+        'folder': 'GEE_exports',
         'scale': scale,
         'region': aoi,
         'fileFormat': 'GeoTIFF',
@@ -298,7 +173,7 @@ def export_tif_via_ee(image: ee.Image, aoi: ee.Geometry, output_path: str, scale
     
     print(f"Export started with task ID: {task_id}")
     print("The file will be available in your Google Drive once the export completes.")
-    print(f"You can manually download it and save to: {output_path}")
+    # print(f"You can manually download it and save to: {output_path}")
     
     # # Optionally monitor the task
     # while task.status()['state'] in ['READY', 'RUNNING']:
@@ -382,20 +257,46 @@ def main():
         geometries=True,
     )
     
+    # Create and apply forest mask
+    print(f"Creating and applying forest mask (type: {args.mask_type})...")
+    forest_mask = create_forest_mask(args.mask_type, aoi,
+                                   ee.Date(f"{args.year}-{args.start_date}"),
+                                   ee.Date(f"{args.year}-{args.end_date}"))
+    
+    # Calculate forest area in hectares
+    mask_area = forest_mask.multiply(ee.Image.pixelArea().divide(10000))
+    forest_area_ha = mask_area.reduceRegion(
+        reducer=ee.Reducer.sum(),
+        geometry=aoi,
+        scale=args.scale,
+        maxPixels=1e10
+    ).get('constant')
+    
+    # Apply forest mask to reference data and merged data
+    reference_data = apply_forest_mask(reference_data, args.mask_type, aoi,
+                                     args.year, args.start_date, args.end_date)
+    merged = apply_forest_mask(merged, args.mask_type, aoi,
+                             args.year, args.start_date, args.end_date)
+    
+    # Export forest mask using export_tif_via_ee
+    forest_mask_filename = f'forest_mask_{forest_area_ha.getInfo():.1f}ha'
+    forest_mask_path = os.path.join(args.output_dir, f'{forest_mask_filename}.tif')
+    print(f"Exporting forest mask as {forest_mask_filename}...")
+    export_tif_via_ee(forest_mask, aoi, 'forest-mask', args.scale)
+    
+    predictor_names = merged.bandNames()
+    
     # Export training data if requested
     if args.export_training:
-        training_path = os.path.join(args.output_dir, 'training_data.csv')
-        export_training_data(reference_data, training_path)
+        # training_path = os.path.join(args.output_dir, 'training_data.csv')
+        training_path = export_training_data(reference_data, args.output_dir,)
         stack_tif_path = os.path.join(args.output_dir, 'stacked_tif.tif')
-        try:
-            export_tif(merged, aoi, stack_tif_path, args.scale)
-        except Exception as e:
-            print('Exporting via Earth Engine instead')
-            export_tif_via_ee(merged, aoi, stack_tif_path, args.scale)
+        
+        print('Exporting training data and tif through Earth Engine')
+        export_tif_via_ee(merged, aoi, 'stack', args.scale)
         
     # Train model
     print("Training model...")
-    predictor_names = merged.bandNames()
     if args.model == "RF":
         var_split_rf = int(np.sqrt(predictor_names.size().getInfo()).round())
         classifier = ee.Classifier.smileRandomForest(
@@ -414,11 +315,8 @@ def main():
     # Export predictions if requested
     if args.export_predictions:
         prediction_path = os.path.join(args.output_dir, 'predictions.tif')
-        try:
-            export_tif(predictions, aoi, prediction_path, args.scale)
-        except Exception as e:
-            print('Exporting via Earth Engine instead')
-            export_tif_via_ee(predictions, aoi, prediction_path, args.scale)
+        print('Exporting via Earth Engine instead')
+        export_tif_via_ee(predictions, aoi, 'chm-prediction', args.scale)
     
     print("Processing complete.")
 

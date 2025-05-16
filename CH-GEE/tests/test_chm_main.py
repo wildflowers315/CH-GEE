@@ -210,13 +210,19 @@ class TestCHMMain(unittest.TestCase):
     def test_parse_args(self):
         """Test argument parsing."""
         with patch('sys.argv', ['chm_main.py',
-                              '--aoi', 'test.geojson',
-                              '--year', '2020',
-                              '--output-dir', 'outputs',
-                              '--export-training',
-                              '--export-predictions']):
+                            '--aoi', 'test.geojson',
+                            '--year', '2020',
+                            '--output-dir', 'outputs',
+                            '--export-training',
+                            '--export-predictions',
+                            '--mask-type', 'NDVI']):
             args = parse_args()
             self.assertEqual(args.aoi, 'test.geojson')
+            self.assertEqual(args.year, 2020)
+            self.assertEqual(args.output_dir, 'outputs')
+            self.assertTrue(args.export_training)
+            self.assertTrue(args.export_predictions)
+            self.assertEqual(args.mask_type, 'NDVI')
             self.assertEqual(args.year, 2020)
             self.assertEqual(args.output_dir, 'outputs')
             self.assertTrue(args.export_training)
