@@ -1,7 +1,6 @@
 import ee
-from typing import Union, List, Tuple
-
-import ee
+# import geopandas as gpd
+import pandas as pd
 from typing import Union, List, Tuple
 
 def create_forest_mask(
@@ -158,47 +157,7 @@ def create_forest_mask(
     return forest_mask
 
 def apply_forest_mask(
-    data: Union[ee.FeatureCollection, ee.Image, ee.ImageCollection, ee.Geometry],
-    mask_type: str,
-    aoi: ee.Geometry,
-    year: int,
-    start_date: str,
-    end_date: str,
-    ndvi_threshold: float = 0.2,
-) -> Union[ee.FeatureCollection, ee.Image, ee.ImageCollection]:
-    """
-    Apply forest mask to the data.
-    
-    Args:
-        data: Input data (FeatureCollection, Image, ImageCollection, or Geometry)
-        mask_type: Type of mask to apply ('DW', 'FNF', 'NDVI', 'ALL', 'none')
-        aoi: Area of interest as Earth Engine Geometry
-        year: Year for analysis
-        start_date: Start date for Sentinel-2 data
-        end_date: End date for Sentinel-2 data
-        ndvi_threshold: NDVI threshold for forest classification (default: 0.2)
-    
-    Returns:
-        Masked data of the same type as input
-        
-    Raises:
-        ValueError: If mask_type is not one of 'DW', 'FNF', 'NDVI', 'ALL', or 'none'
-        ee.ee_exception.EEException: If no data is available for the specified area and date range
-    """
-    if mask_type not in ['DW', 'FNF', 'NDVI', 'ALL', 'none']:
-        raise ValueError(f"Invalid mask_type: {mask_type}. Must be one of 'DW', 'FNF', 'NDVI', 'ALL', or 'none'")
-    
-    # Format dates properly for Earth Engine
-    start_date_ee = ee.Date(f'{year}-{start_date}')
-    end_date_ee = ee.Date(f'{year}-{end_date}')
-    
-    # Create forest mask
-    FNF = create_forest_mask(mask_type, aoi, start_date_ee, end_date_ee, ndvi_threshold)
-    
-    # Filter features that intersect with the forest mask
-    binary_forest_mask = FNF.gt(0.0)
-    
-def apply_forest_mask(
+        # data: Union[ee.FeatureCollection, ee.Image, ee.ImageCollection, ee.Geometry, pd.DataFrame, gpd.GeoDataFrame],
         data: Union[ee.FeatureCollection, ee.Image, ee.ImageCollection, ee.Geometry],
         mask_type: str,
         aoi: ee.Geometry,
@@ -206,21 +165,23 @@ def apply_forest_mask(
         start_date: str,
         end_date: str,
         ndvi_threshold: float = 0.2,
+        scale: int = 30,
     ) -> Union[ee.FeatureCollection, ee.Image, ee.ImageCollection]:
         """
         Apply forest mask to the data.
         
         Args:
-            data: Input data (FeatureCollection, Image, ImageCollection, or Geometry)
+            data: Input data (FeatureCollection, Image, ImageCollection, Geometry, DataFrame, or GeoDataFrame)
             mask_type: Type of mask to apply ('DW', 'FNF', 'NDVI', 'ALL', 'none')
             aoi: Area of interest as Earth Engine Geometry
             year: Year for analysis
-            start_date: Start date for Sentinel-2 data
-            end_date: End date for Sentinel-2 data
+            start_date: Start date for Sentinel-2 data (for Earth Engine data)
+            end_date: End date for Sentinel-2 data (for Earth Engine data)
             ndvi_threshold: NDVI threshold for forest classification (default: 0.2)
         
         Returns:
-            Masked data of the same type as input
+            Masked data of the same type as input. For DataFrames/GeoDataFrames, returns a copy with
+            non-forest areas having rh=0. For Earth Engine data, returns masked data with masked out non-forest areas.
             
         Raises:
             ValueError: If mask_type is not one of 'DW', 'FNF', 'NDVI', 'ALL', or 'none'
@@ -240,53 +201,40 @@ def apply_forest_mask(
         binary_forest_mask = forest_mask.gt(0.0)
         
         def update_forest_mask(feature_or_image):
-            """Update forest mask for a feature or image."""
-            if isinstance(feature_or_image, ee.Feature):
-                # For GEDI feature, convert feature to data
-                if 'rh' in feature_or_image.propertyNames().getInfo():
-                    # If it has 'rh' property, use it
-                    height = feature_or_image.get('rh')
-                    if isinstance(height, ee.Image):
-                        height = height.select('rh')
-                    height_image = ee.Image.constant(height).rename('rh')
-                    masked_image = height_image.updateMask(binary_forest_mask)
-                    
-                    # Get the masked height value
-                    masked_height = ee.Algorithms.If(
-                        masked_image.mask().reduceRegion(
-                            reducer=ee.Reducer.first(),
-                            geometry=feature_or_image.geometry(),
-                            scale=10
-                        ).get('rh'),
-                        masked_image.reduceRegion(
-                            reducer=ee.Reducer.first(),
-                            geometry=feature_or_image.geometry(),
-                            scale=10
-                        ).get('rh'),
-                        0
-                    )
-                    return ee.Feature(feature_or_image.geometry(), {'rh': masked_height})
-                else:
-                    # For other feature types, just filter by mask
-                    return ee.Feature(feature_or_image.geometry(), feature_or_image.toDictionary()) \
-                        .set('forest_mask', binary_forest_mask)
-                    
-            elif isinstance(feature_or_image, ee.Geometry):
-                # For geometry, create a constant image and apply mask
-                constant_image = ee.Image.constant(1).rename('constant').clip(feature_or_image)
-                masked_image = constant_image.updateMask(binary_forest_mask)
-                return masked_image
+            """Update forest mask for a feature or image using server-side operations."""
+            element = ee.Element(feature_or_image)
+            element_type = ee.Algorithms.ObjectType(element)
+            
+            def handle_feature():
+                # Get the feature and preserve all properties
+                feature = ee.Feature(element)
+                props = feature.toDictionary()
                 
-            else:
-                # For images (like Sentinel-2), just apply the mask to all bands
-                try:
-                    # Apply mask to the image
-                    masked_image = feature_or_image.updateMask(binary_forest_mask)
-                    return masked_image
-                except Exception as e:
-                    print(f"Error applying mask to image: {e}")
-                    # If error occurs, return original image
-                    return feature_or_image
+                # Check if point is in forest
+                is_forest = binary_forest_mask.reduceRegion(
+                    reducer=ee.Reducer.first(),
+                    geometry=feature.geometry(),
+                    scale=scale
+                ).get(binary_forest_mask.bandNames().get(0))
+                
+                # Update height based on forest mask
+                height = ee.Algorithms.If(
+                    ee.Algorithms.IsEqual(is_forest, 1),
+                    feature.get('rh'),
+                    0
+                )
+                
+                # Keep the original properties but update rh
+                return ee.Feature(feature.geometry(), props.set('rh', height))
+            
+            def handle_image():
+                return ee.Image(element).updateMask(binary_forest_mask)
+            
+            return ee.Algorithms.If(
+                ee.Algorithms.IsEqual(element_type, 'Feature'),
+                handle_feature(),
+                handle_image()
+            )
         
         # Apply the mask based on data type
         if isinstance(data, ee.FeatureCollection):
@@ -296,187 +244,33 @@ def apply_forest_mask(
         elif isinstance(data, (ee.Image, ee.Geometry)):
             masked_data = update_forest_mask(data)
         else:
+            # # Handle pandas DataFrame or GeoDataFrame
+            # if isinstance(data, (pd.DataFrame, gpd.GeoDataFrame)):
+            #     if 'rh' not in data.columns:
+            #         raise ValueError("DataFrame must contain 'rh' column")
+                
+            #     # Create a binary mask for forest (all True for 'none' mask type)
+            #     if mask_type == 'none':
+            #         forest_mask = pd.Series(True, index=data.index)
+            #     else:
+            #         # Apply masking criteria based on mask_type
+            #         forest_mask = pd.Series(True, index=data.index)
+                    
+            #         if 'ndvi' in data.columns and mask_type in ['NDVI', 'ALL']:
+            #             forest_mask &= data['ndvi'] >= ndvi_threshold
+                    
+            #         if 'dw_class' in data.columns and mask_type in ['DW', 'ALL']:
+            #             forest_mask &= data['dw_class'] == 1
+                    
+            #         if 'fnf' in data.columns and mask_type in ['FNF', 'ALL']:
+            #             forest_mask &= data['fnf'].isin([1, 2])  # Assuming 1,2 are forest classes
+                
+            #     # Apply mask and set non-forest heights to 0
+            #     masked_data = data.copy()
+            #     masked_data.loc[~forest_mask, 'rh'] = 0
+            #     return masked_data
+            # else:
             print(f"Unsupported data type: {type(data)}")
-            raise ValueError(f"Invalid data type: {type(data)}. Must be one of ee.FeatureCollection, ee.Image, ee.ImageCollection, or ee.Geometry")
+            raise ValueError(f"Invalid data type: {type(data)}. Must be one of ee.FeatureCollection, ee.Image, ee.ImageCollection, ee.Geometry, pd.DataFrame, or gpd.GeoDataFrame")
         
         return masked_data
-
-# def apply_forest_mask(
-#     data: ee.FeatureCollection,
-#     mask_type: str,
-#     aoi: ee.Geometry,
-#     year: int,
-#     start_date: str,
-#     end_date: str,
-#     ndvi_threshold: float = 0.2,  # New parameter for NDVI threshold
-# ) -> ee.FeatureCollection:
-#     """
-#     Apply forest mask to the data.
-    
-#     Args:
-#         data: Input data as Earth Engine FeatureCollection
-#         mask_type: Type of mask to apply ('DW' for Dynamic World, 'FNF' for Forest/Non-Forest, 
-#                                         'NDVI' for NDVI threshold, 'ALL' for combined masks)
-#         aoi: Area of interest as Earth Engine Geometry
-#         year: Year for analysis
-#         start_date: Start date for Sentinel-2 data
-#         end_date: End date for Sentinel-2 data
-#         ndvi_threshold: NDVI threshold for forest classification (default: 0.5)
-    
-#     Returns:
-#         ee.FeatureCollection: Masked data
-        
-#     Raises:
-#         ValueError: If mask_type is not one of 'DW', 'FNF', 'NDVI', 'ALL', or 'none'
-#         ee.ee_exception.EEException: If no data is available for the specified area and date range
-#     """
-#     if mask_type not in ['DW', 'FNF', 'NDVI', 'ALL', 'none']:
-#         raise ValueError(f"Invalid mask_type: {mask_type}. Must be one of 'DW', 'FNF', 'NDVI', 'ALL', or 'none'")
-    
-#     # Format dates properly for Earth Engine
-#     start_date_ee = ee.Date(f'{year}-{start_date}')
-#     end_date_ee = ee.Date(f'{year}-{end_date}')
-    
-#     # Initialize masks with default (all ones)
-#     dw_mask = ee.Image(1).clip(aoi)
-#     fnf_mask = ee.Image(1).clip(aoi)
-#     ndvi_mask = ee.Image(1).clip(aoi)
-    
-#     # Create Dynamic World mask if requested
-#     if mask_type in ['DW', 'ALL']:
-#         # Import Dynamic World dataset
-#         aoi_center = aoi.centroid(maxError=1)
-        
-#         colFilter = ee.Filter.And(
-#             ee.Filter.bounds(aoi_center),
-#             ee.Filter.date(start_date_ee, end_date_ee))
-        
-#         dw = ee.ImageCollection('GOOGLE/DYNAMICWORLD/V1') \
-#             .filter(colFilter)
-        
-#         # Check if we have any data
-#         count = dw.size().getInfo()
-#         if count == 0:
-#             print("No Dynamic World data available for the specified area and date range")
-#         else:
-#             # Get median image and select forest class (class 1)
-#             dw_median = dw.median().clip(aoi)
-#             # non 1 value (==0, or >=2 ) is non forest class
-#             non_forest_mask = dw_median.select('label').eq(0).Or(dw_median.select('label').gte(2))
-#             dw_mask = ee.Image(1).clip(aoi).where(non_forest_mask, 0)
-    
-#     # Create Forest/Non-Forest mask if requested
-#     if mask_type in ['FNF', 'ALL']:
-#         # Import ALOS/PALSAR dataset
-#         fnf = ee.ImageCollection("JAXA/ALOS/PALSAR/YEARLY/FNF4") \
-#             .filterBounds(aoi) \
-#             .filterDate(start_date_ee, end_date_ee)
-        
-#         # Check if we have any data
-#         count = fnf.size().getInfo()
-#         if count == 0:
-#             print("No Dense ALOS/PALSAR FNF4 data available for the specified area and date range")
-#             fnf = ee.ImageCollection("JAXA/ALOS/PALSAR/YEARLY/FNF") \
-#                 .filterBounds(aoi) \
-#                 .filterDate(start_date_ee, end_date_ee)
-#             count = fnf.size().getInfo()
-#             if count == 0:
-#                 print("No ALOS/PALSAR FNF data available for the specified area and date range")
-#             else:
-#                 print("ALOS/PALSAR FNF data available for the specified area and date range")
-#                 fnf_median = fnf.median().clip(aoi)
-#                 fnf_mask = fnf_median.select('fnf').eq(1)
-#         else:
-#             print("Dense ALOS/PALSAR FNF4 data available for the specified area and date range")
-#             # Get median image and process forest mask
-#             fnf_median = fnf.median().clip(aoi)
-#             fnf_mask = fnf_median.select('fnf').eq(1).Or(fnf_median.select('fnf').eq(2))
-    
-#     # Create NDVI-based mask if requested
-#     if mask_type in ['NDVI', 'ALL']:
-#         # Import Sentinel-2 dataset
-#         s2 = ee.ImageCollection('COPERNICUS/S2_HARMONIZED') \
-#             .filterBounds(aoi) \
-#             .filterDate(start_date_ee, end_date_ee) \
-#             .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 30))  # Filter cloudy images
-        
-#         # Check if we have any data
-#         count = s2.size().getInfo()
-#         if count == 0:
-#             print("No Sentinel-2 data available for the specified area and date range for NDVI calculation")
-#         else:
-#             # Calculate NDVI for each image
-#             def add_ndvi(img):
-#                 ndvi = img.normalizedDifference(['B8', 'B4']).rename('NDVI')
-#                 return img.addBands(ndvi)
-            
-#             s2_with_ndvi = s2.map(add_ndvi)
-            
-#             # Get median NDVI
-#             ndvi_median = s2_with_ndvi.select('NDVI').median().clip(aoi)
-            
-#             # Create forest mask based on NDVI threshold
-#             ndvi_mask = ndvi_median.gte(ndvi_threshold)
-    
-#     # Determine final mask based on mask_type
-#     if mask_type == 'DW':
-#         FNF = dw_mask
-#     elif mask_type == 'FNF':
-#         FNF = fnf_mask
-#     elif mask_type == 'NDVI':
-#         FNF = ndvi_mask
-#     elif mask_type == 'ALL':
-#         # Combine all masks (if ANY mask indicates forest, treat as forest)
-#         FNF = dw_mask.Or(fnf_mask).Or(ndvi_mask)
-#     else:  # mask_type == 'none'
-#         # No mask applied
-#         FNF = ee.Image(1).clip(aoi)
-    
-#     # Filter features that intersect with the forest mask
-#     binary_forest_mask = FNF.gt(0.0)
-    
-#     def update_forest_mask(feature_or_image):
-#         """Update forest mask for a feature or image."""
-#         if isinstance(feature_or_image, ee.Feature):
-#             # For GEDI feature, convert feature to data
-#             height = feature_or_image.get('rh')  # Use rh for GEDI data
-#             if isinstance(height, ee.Image):
-#                 height = height.select('rh')
-#             height_image = ee.Image.constant(height).rename('rh')
-#             masked_image = height_image.updateMask(binary_forest_mask)
-#             # Get the masked height value
-#             masked_height = ee.Algorithms.If(
-#                 masked_image.mask().reduceRegion(
-#                     reducer=ee.Reducer.first(),
-#                     geometry=feature_or_image.geometry(),
-#                     scale=10
-#                 ).get('rh'),
-#                 masked_image.reduceRegion(
-#                     reducer=ee.Reducer.first(),
-#                     geometry=feature_or_image.geometry(),
-#                     scale=10
-#                 ).get('rh'),
-#                 0
-#             )
-#             return ee.Feature(feature_or_image.geometry(), {'rh': masked_height})
-#         elif isinstance(feature_or_image, ee.Geometry):
-#             # For GEDI geometry, create a constant image and apply mask
-#             height_image = ee.Image.constant(0).rename('rh')  # Default height
-#             masked_image = height_image.updateMask(binary_forest_mask)
-#             return masked_image
-#         else:
-#             # For S2 images, just apply the mask
-#             return feature_or_image.updateMask(binary_forest_mask)
-    
-#     # Apply the mask based on data type
-#     if isinstance(data, ee.FeatureCollection):
-#         masked_data = data.map(update_forest_mask)
-#     elif isinstance(data, ee.ImageCollection):
-#         masked_data = data.map(update_forest_mask)
-#     elif isinstance(data, (ee.Image, ee.Geometry)):
-#         masked_data = update_forest_mask(data)
-#     else:
-#         print("not GEDI geometry nor S1, S2 image")
-#         raise ValueError(f"Invalid data type: {type(data)}")
-    
-#     return masked_data

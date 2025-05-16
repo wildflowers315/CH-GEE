@@ -32,15 +32,17 @@ cmd = [
     '--output-dir', output_dir,
     '--export-training',
     '--export-predictions',
-    '--scale', '30'
+    '--scale', '30',
+    '--ndvi-threshold', '0.35',
+    '--mask-type', 'ALL',
 ]
 
 # Convert all arguments to strings
 cmd = [str(arg) for arg in cmd]
 
 # Run the model training and prediction
-# print("Running canopy height model...")
-# subprocess.run(cmd, check=True)
+print("Running canopy height model...")
+subprocess.run(cmd, check=True)
 
 # Run evaluation with PDF report generation
 eval_cmd = [
@@ -53,6 +55,6 @@ eval_cmd = [
     '--merged', os.path.join(output_dir, 'chm_export_1747162160.tif')
 ]
 
-print("\nRunning evaluation...")
-subprocess.run([str(arg) for arg in eval_cmd], check=True)
-print("All processing complete!")
+# print("\nRunning evaluation...")
+# subprocess.run([str(arg) for arg in eval_cmd], check=True)
+# print("All processing complete!")

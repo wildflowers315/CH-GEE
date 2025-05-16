@@ -75,6 +75,8 @@ def parse_args():
     parser.add_argument('--mask-type', type=str, default='NDVI',
                        choices=['DW', 'FNF', 'NDVI', 'ALL', 'none'],
                        help='Type of forest mask to apply')
+    # ndvi threshold
+    parser.add_argument('--ndvi-threshold', type=float, default=0.3, help='NDVI threshold for forest mask')
     
     # GEDI parameters
     parser.add_argument('--gedi-start-date', type=str, help='GEDI start date (YYYY-MM-DD)')
@@ -130,10 +132,39 @@ def export_training_data(reference_data: ee.FeatureCollection, output_dir: str):
     band_length = len(df.columns) - 3  # Exclude 'rh', 'longitude' and 'latitude'
     df_size = len(df)
     output_path = os.path.join(output_dir, f"training_data_b{band_length}_{df_size}.csv")
-    # os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
     df.to_csv(output_path, index=False)
     print(f"Training data exported to: {output_path}")
     return output_path
+
+def export_training_data_via_ee(reference_data: ee.FeatureCollection, prefix: str):
+    """Export training data as CSV using Earth Engine batch task."""
+    # Create output directory
+    # os.makedirs(output_dir, exist_ok=True)
+    
+    # Generate a unique filename
+    # timestamp = int(time.time())
+    
+    # Set up export task
+    export_params = {
+        'collection': reference_data,
+        'description': prefix,
+        'fileNamePrefix': prefix,
+        'folder': 'GEE_exports',
+        'fileFormat': 'CSV',
+        'selectors': ['rh'] + ['.geo']  # Include coordinates and properties
+    }
+    
+    # Start the export task
+    task = ee.batch.Export.table.toDrive(**export_params)
+    task.start()
+    
+    print(f"Training data export started with task ID: {prefix}")
+    print("The CSV file will be available in your Google Drive once the export completes.")
+    
+    # # Return expected path for later use
+    # output_path = os.path.join(output_dir, f"{filename}.csv")
+    # return output_path
 
 def export_tif_via_ee(image: ee.Image, aoi: ee.Geometry, prefix: str, scale: int):
     """Export predicted canopy height map as GeoTIFF using Earth Engine export."""
@@ -141,19 +172,42 @@ def export_tif_via_ee(image: ee.Image, aoi: ee.Geometry, prefix: str, scale: int
     # if 'classification' in image.bandNames().getInfo():
     #     image = image.select(['classification'], ['canopy_height'])
     band_count = image.bandNames().size().getInfo()
-    # Get the first band name
-    first_band = image.bandNames().get(0)
-    region = image.geometry().bounds()
-    info = image.select(first_band).reduceRegion(
-        reducer=ee.Reducer.count(),
-        geometry=region,
-        scale=10,
-        maxPixels=1e13
-    )
-    pixel_count = info.get(first_band)
     
-    # Generate a unique task ID
-    task_id = f"{prefix}_b{band_count}_s{scale}_p{pixel_count}"
+    pixel_area = ee.Image.pixelArea().divide(10000)  # Convert to hectares
+    area_img = ee.Image(1).rename('area').multiply(pixel_area)
+    
+    # Calculate total area in hectares
+    image_area_ha = area_img.reduceRegion(
+        reducer=ee.Reducer.sum(),
+        geometry=aoi,
+        scale=scale,
+        maxPixels=1e10
+    ).get('area')
+    
+    image_area_ha = int(round(image_area_ha.getInfo(), 0))
+    
+    # image_area = image.multiply(ee.Image.pixelArea().divide(10000)).rename('area')
+    # image_area_ha = image_area.reduceRegion(
+    #     reducer=ee.Reducer.sum(),
+    #     geometry=aoi,
+    #     scale=scale,
+    #     maxPixels=1e10
+    # ).get('area')
+    # image_area_ha = int(round(image_area_ha.getInfo(), 0))
+    
+    # first_band = image.bandNames().get(0)
+    # region = image.geometry().bounds()
+    # info = image.select(first_band).reduceRegion(
+    #     reducer=ee.Reducer.count(),
+    #     geometry=region,
+    #     scale=scale,
+    #     maxPixels=1e13
+    # )
+    # pixel_count = image_area_ha.getInfo():.1f
+    
+    # Generate a unique task ID (sanitize prefix and ensure valid characters)
+    clean_prefix = ''.join(c for c in prefix if c.isalnum() or c in '_-')
+    task_id = f"{clean_prefix}_b{band_count}_s{scale}_p{image_area_ha}"
     
     # Set export parameters
     export_params = {
@@ -200,18 +254,6 @@ def main():
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
     
-    # Get GEDI data
-    print("Loading GEDI data...")
-    gedi = get_gedi_data(aoi, args.gedi_start_date, args.gedi_end_date, args.quantile)
-    
-    # Sample GEDI points
-    gedi_points = gedi.sample(
-        region=aoi,
-        scale=args.scale,
-        geometries=True,
-        dropNulls=True,
-        seed=42
-    )
     
     # Get satellite data
     print("Collecting satellite data...")
@@ -245,60 +287,92 @@ def main():
     s1 = s1.reproject(s2_projection).float()              # Convert to Float32
     s2 = s2.float()                                       # Convert to Float32
     alos2 = alos2.reproject(s2_projection).float()        # Convert to Float32
+    
     # Merge datasets
     merged = s2.addBands(s1).addBands(dem_data).addBands(alos2)
     
-    # Sample points
+    # Get predictor names before any masking
+    print("Getting band information...")
+    predictor_names = merged.bandNames()
+    n_predictors = predictor_names.size().getInfo()
+    var_split_rf = int(np.sqrt(n_predictors).round())
+        
+    # Create and apply forest mask
+    print(f"Creating and applying forest mask (type: {args.mask_type})...")
+    forest_mask = create_forest_mask(args.mask_type, aoi,
+                                   ee.Date(f"{args.year}-{args.start_date}"),
+                                   ee.Date(f"{args.year}-{args.end_date}"),
+                                   args.ndvi_threshold)
+
+    ndvi_threshold_percent = int(round(args.ndvi_threshold * 100,0))
+    # Export forest mask using export_tif_via_ee
+    forest_mask_prefix = f'forestMask{args.mask_type}{ndvi_threshold_percent}'
+    # forest_mask_path = os.path.join(args.output_dir, f'{forest_mask_filename}.tif')
+
+
+    # Get GEDI data
+    print("Loading GEDI data...")
+    gedi = get_gedi_data(aoi, args.gedi_start_date, args.gedi_end_date, args.quantile)
+    
+    # forest_geometry = forest_mask.geometry()
+    # Sample GEDI points
+    gedi_points = gedi.sample(
+        region=aoi,
+        scale=args.scale,
+        geometries=True,
+        dropNulls=True,
+        seed=42
+    )
+    
+        # Sample points
     reference_data = merged.sampleRegions(
         collection=gedi_points,
         scale=args.scale,
         projection=s2_projection,
         tileScale=1,
-        geometries=True,
+        geometries=True
     )
-    
-    # Create and apply forest mask
-    print(f"Creating and applying forest mask (type: {args.mask_type})...")
-    forest_mask = create_forest_mask(args.mask_type, aoi,
-                                   ee.Date(f"{args.year}-{args.start_date}"),
-                                   ee.Date(f"{args.year}-{args.end_date}"))
-    
     # Calculate forest area in hectares
-    mask_area = forest_mask.multiply(ee.Image.pixelArea().divide(10000))
-    forest_area_ha = mask_area.reduceRegion(
-        reducer=ee.Reducer.sum(),
-        geometry=aoi,
-        scale=args.scale,
-        maxPixels=1e10
-    ).get('constant')
+    # mask_area = forest_mask.multiply(ee.Image.pixelArea().divide(10000)).rename('area')
+    # forest_area_ha = mask_area.reduceRegion(
+    #     reducer=ee.Reducer.sum(),
+    #     geometry=aoi,
+    #     scale=args.scale,
+    #     maxPixels=1e10
+    #     ).get('area')
+    
+    
+    # # extract reference data as geodataframe
+    # training_path = export_training_data(reference_data, args.output_dir)
+    # reference_df = pd.read_csv(training_path)
+    # # remove the training data csv 
+    # os.remove(training_path)
+    # reference_gdf = reference_df.drop(columns=['longitude', 'latitude'])
     
     # Apply forest mask to reference data and merged data
-    reference_data = apply_forest_mask(reference_data, args.mask_type, aoi,
-                                     args.year, args.start_date, args.end_date)
-    merged = apply_forest_mask(merged, args.mask_type, aoi,
-                             args.year, args.start_date, args.end_date)
-    
-    # Export forest mask using export_tif_via_ee
-    forest_mask_filename = f'forest_mask_{forest_area_ha.getInfo():.1f}ha'
-    forest_mask_path = os.path.join(args.output_dir, f'{forest_mask_filename}.tif')
-    print(f"Exporting forest mask as {forest_mask_filename}...")
-    export_tif_via_ee(forest_mask, aoi, 'forest-mask', args.scale)
-    
-    predictor_names = merged.bandNames()
+    # reference_gdf = apply_forest_mask(reference_gdf, args.mask_type, aoi,
+    #                                  args.year, args.start_date, args.end_date,
+    #                                  args.ndvi_threshold)
+    # reference_data = apply_forest_mask(reference_data, args.mask_type, aoi,
+    #                                  args.year, args.start_date, args.end_date,
+    #                                  args.ndvi_threshold, args.scale)
+    # merged = apply_forest_mask(merged, args.mask_type, aoi,
+    #                          args.year, args.start_date, args.end_date,
+    #                          args.ndvi_threshold, args.scale)
     
     # Export training data if requested
     if args.export_training:
-        # training_path = os.path.join(args.output_dir, 'training_data.csv')
-        training_path = export_training_data(reference_data, args.output_dir,)
-        stack_tif_path = os.path.join(args.output_dir, 'stacked_tif.tif')
-        
-        print('Exporting training data and tif through Earth Engine')
+        print('Exporting training data and tif through Earth Engine...')
+        training_prefix = f'trainingData{args.mask_type}{ndvi_threshold_percent}'
+        # export_training_data_via_ee(reference_data, training_prefix)
+        training_path = export_training_data(reference_data, args.output_dir)
+        # print(f"Exporting training data as CSV: {training_path}")
+        # Export training data as GeoTIFF
         export_tif_via_ee(merged, aoi, 'stack', args.scale)
-        
+    
     # Train model
     print("Training model...")
     if args.model == "RF":
-        var_split_rf = int(np.sqrt(predictor_names.size().getInfo()).round())
         classifier = ee.Classifier.smileRandomForest(
             numberOfTrees=args.num_trees_rf,
             variablesPerSplit=var_split_rf,
@@ -314,9 +388,13 @@ def main():
     
     # Export predictions if requested
     if args.export_predictions:
-        prediction_path = os.path.join(args.output_dir, 'predictions.tif')
+        # prediction_path = os.path.join(args.output_dir, 'predictions.tif')
         print('Exporting via Earth Engine instead')
-        export_tif_via_ee(predictions, aoi, 'chm-prediction', args.scale)
+        export_tif_via_ee(predictions, aoi, 'predictionCHM', args.scale)
+    
+    
+    print(f"Exporting forest mask as {forest_mask_prefix}...")
+    export_tif_via_ee(forest_mask, aoi, forest_mask_prefix, args.scale)
     
     print("Processing complete.")
 
