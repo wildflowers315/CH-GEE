@@ -98,29 +98,49 @@ def create_plots(pred: np.ndarray, ref: np.ndarray, metrics: dict, output_dir: s
     return plot_paths
 
 
-def create_comparison_grid(ref_data, pred_data, diff_data, rgb_data, output_path):
+def create_comparison_grid(ref_data, pred_data, diff_data, rgb_data, output_path, forest_mask=None):
     """Create 2x2 grid visualization and save to file."""
     fig, axes = plt.subplots(2, 2, figsize=(10, 10))
+    vmax = 40
+    # Create masked versions for visualization
+    if forest_mask is not None:
+        ref_masked = np.ma.masked_where(~forest_mask, ref_data)
+        pred_masked = np.ma.masked_where(~forest_mask, pred_data)
+        diff_masked = np.ma.masked_where(~forest_mask, diff_data)
+    else:
+        ref_masked = ref_data
+        pred_masked = pred_data
+        diff_masked = diff_data
     
     # Plot reference data
-    im0 = axes[0,0].imshow(ref_data, cmap='viridis', vmin=0, vmax=50, aspect='equal')
+    im0 = axes[0,0].imshow(ref_masked, cmap='viridis', vmin=0, vmax=vmax, aspect='equal')
     axes[0,0].set_title('Reference Heights')
     plt.colorbar(im0, ax=axes[0,0], fraction=0.046, pad=0.04)
     
     # Plot prediction data
-    im1 = axes[0,1].imshow(pred_data, cmap='viridis', vmin=0, vmax=50, aspect='equal')
+    im1 = axes[0,1].imshow(pred_masked, cmap='viridis', vmin=0, vmax=vmax, aspect='equal')
     axes[0,1].set_title('Predicted Heights')
     plt.colorbar(im1, ax=axes[0,1], fraction=0.046, pad=0.04)
     
     # Plot difference map
-    im2 = axes[1,0].imshow(diff_data, cmap='RdYlBu', vmin=-10, vmax=10, aspect='equal')
+    im2 = axes[1,0].imshow(diff_masked, cmap='RdYlBu', vmin=-10, vmax=10, aspect='equal')
     axes[1,0].set_title('Height Difference (Pred - Ref)')
     plt.colorbar(im2, ax=axes[1,0], fraction=0.046, pad=0.04)
+    
     
     # Plot RGB or empty plot
     if rgb_data is not None:
         axes[1,1].imshow(rgb_data, aspect='equal')
         axes[1,1].set_title('RGB Composite')
+        # if forest_mask is not None:
+    #         # Apply forest mask to RGB data
+    #         rgb_masked = rgb_data.copy()
+    #         for i in range(3):
+    #             rgb_masked[:,:,i] = np.where(forest_mask, rgb_data[:,:,i], 0)
+            # axes[1,1].imshow(rgb_masked, aspect='equal')
+    #     else:
+    #         axes[1,1].imshow(rgb_data, aspect='equal')
+    #     axes[1,1].set_title('RGB Composite')
     else:
         axes[1,1].imshow(np.zeros_like(pred_data), cmap='gray', aspect='equal')
         axes[1,1].set_title('RGB Not Available')

@@ -111,8 +111,8 @@ def get_common_bounds(pred_path: str, ref_path: str):
             return bounds
 
 
-def load_and_align_rasters(pred_path: str, ref_path: str, output_dir: str = None):
-    """Load and align two rasters to same CRS and resolution."""
+def load_and_align_rasters(pred_path: str, ref_path: str, forest_mask_path: str = None, output_dir: str = None):
+    """Load and align rasters to same CRS and resolution, optionally applying forest mask."""
     # Get intersection bounds in prediction CRS
     bounds = get_common_bounds(pred_path, ref_path)
     
@@ -151,4 +151,23 @@ def load_and_align_rasters(pred_path: str, ref_path: str, output_dir: str = None
         output_path=ref_clip_path
     )
     
-    return pred_data, ref_data, target_transform
+    # Load and apply forest mask if provided
+    forest_mask = None
+    if forest_mask_path and os.path.exists(forest_mask_path):
+        print("\nProcessing forest mask...")
+        mask_data, _ = clip_and_resample_raster(
+            forest_mask_path, bounds,
+            target_transform=target_transform,
+            target_crs=target_crs,
+            target_shape=target_shape
+        )
+        # Create binary mask
+        forest_mask = (mask_data > 0)
+        
+        # Apply forest mask to both prediction and reference data
+        pred_data[~forest_mask] = np.nan
+        ref_data[~forest_mask] = np.nan
+        
+        print(f"Forest mask applied - {np.sum(forest_mask):,} forest pixels")
+
+    return pred_data, ref_data, target_transform, forest_mask

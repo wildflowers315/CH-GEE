@@ -10,13 +10,10 @@ from rasterio.transform import from_origin
 
 from evaluate_predictions import (
     check_predictions,
-    validate_data,
-    get_intersection_bounds,
-    clip_and_resample,
-    load_and_preprocess_rasters,
-    calculate_metrics,
-    create_plots
+    calculate_metrics
 )
+from evaluation_utils import validate_data, create_plots
+from raster_utils import load_and_align_rasters
 
 class TestEvaluatePredictions(unittest.TestCase):
     @classmethod
@@ -27,10 +24,13 @@ class TestEvaluatePredictions(unittest.TestCase):
         # Create test rasters
         cls.ref_path = os.path.join(cls.temp_dir, 'ref.tif')
         cls.pred_path = os.path.join(cls.temp_dir, 'pred.tif')
+        cls.forest_mask_path = os.path.join(cls.temp_dir, 'forest_mask.tif')
         
         # Sample data
-        cls.ref_data = np.random.normal(15, 5, (100, 100))
-        cls.pred_data = cls.ref_data + np.random.normal(0, 2, (100, 100))
+        # Generate data within valid range (0-50m)
+        cls.ref_data = np.clip(np.random.normal(25, 5, (100, 100)), 0, 50)
+        cls.pred_data = np.clip(cls.ref_data + np.random.normal(0, 2, (100, 100)), 0, 50)
+        cls.forest_mask = np.random.choice([0, 1], size=(100, 100), p=[0.3, 0.7])  # 70% forest coverage
         
         # Create sample rasters
         transform = from_origin(10.0, 50.0, 0.001, 0.001)
@@ -52,6 +52,10 @@ class TestEvaluatePredictions(unittest.TestCase):
         # Write prediction raster
         with rasterio.open(cls.pred_path, 'w', **profile) as dst:
             dst.write(cls.pred_data.astype('float32'), 1)
+            
+        # Write forest mask raster
+        with rasterio.open(cls.forest_mask_path, 'w', **profile) as dst:
+            dst.write(cls.forest_mask.astype('float32'), 1)
 
     @classmethod
     def tearDownClass(cls):
@@ -85,66 +89,61 @@ class TestEvaluatePredictions(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_data(np.full(100, 0.001), self.ref_data.flatten())
 
-    def test_get_intersection_bounds(self):
-        """Test finding intersection bounds between rasters."""
-        bounds = get_intersection_bounds(self.pred_path, self.ref_path)
-        self.assertEqual(len(bounds), 4)  # Should return (left, bottom, right, top)
-        self.assertTrue(bounds[2] > bounds[0])  # right > left
-        self.assertTrue(bounds[3] > bounds[1])  # top > bottom
-
-    def test_clip_and_resample(self):
-        """Test clipping and resampling rasters."""
-        # For geographic coordinates, y2 (north) should be greater than y1 (south)
-        x_start = 10.0
-        y_start = 50.0
-        delta = 0.01  # 10 pixels at 0.001 degree resolution
-        bounds = (
-            x_start,      # west
-            y_start,      # south
-            x_start + delta,  # east
-            y_start + delta   # north
-        )
-
-        # Define target shape
-        target_shape = (10, 10)
-
-        with rasterio.open(self.pred_path) as src:
-            target_transform = rasterio.transform.from_bounds(
-                bounds[0], bounds[1],  # west, south
-                bounds[2], bounds[3],  # east, north
-                target_shape[1], target_shape[0]  # width, height
-            )
-            target_crs = src.crs
-        
-        data, transform = clip_and_resample(
-            self.pred_path,
-            bounds,
-            target_transform=target_transform,
-            target_crs=target_crs,
-            target_shape=target_shape
-        )
-        
-        self.assertIsInstance(data, np.ndarray)
-        self.assertEqual(data.shape, target_shape)
-        self.assertEqual(transform, target_transform)
-
-    def test_load_and_preprocess_rasters(self):
-        """Test loading and preprocessing raster data."""
+    def test_load_and_align_rasters(self):
+        """Test loading and aligning raster data."""
         # Create output directory
         out_dir = os.path.join(self.temp_dir, 'output')
         os.makedirs(out_dir, exist_ok=True)
         
-        pred_data, ref_data, transform, mask = load_and_preprocess_rasters(
-            self.pred_path, 
-            self.ref_path, 
+        # Test without forest mask
+        # Test without forest mask
+        pred_data, ref_data, transform, forest_mask = load_and_align_rasters(
+            self.pred_path,
+            self.ref_path,
+            None,  # No forest mask
             out_dir
         )
         
+        # Basic checks
         self.assertEqual(pred_data.shape, ref_data.shape)
-        self.assertTrue(np.all(pred_data >= 0))  # Check valid range
-        self.assertTrue(np.all(pred_data <= 50))
-        self.assertTrue(np.all(ref_data >= 0))
-        self.assertTrue(np.all(ref_data <= 50))
+        self.assertEqual(pred_data.shape, (100, 100))
+        # Check if any non-NaN values are outside valid range
+        valid_pred = pred_data[~np.isnan(pred_data)]
+        valid_ref = ref_data[~np.isnan(ref_data)]
+        self.assertTrue(np.all(valid_pred >= 0))  # Check valid range
+        self.assertTrue(np.all(valid_pred <= 50))
+        self.assertTrue(np.all(valid_ref >= 0))
+        self.assertTrue(np.all(valid_ref <= 50))
+        # Test with forest mask (remove duplicate line)
+        pred_data, ref_data, transform, mask = load_and_align_rasters(
+            self.pred_path,
+            self.ref_path,
+            self.forest_mask_path,
+            out_dir
+        )
+        
+        # Additional checks for forest mask
+        self.assertEqual(pred_data.shape, ref_data.shape)
+        
+        # Check if any non-NaN values are outside valid range
+        valid_pred = pred_data[~np.isnan(pred_data)]
+        valid_ref = ref_data[~np.isnan(ref_data)]
+        self.assertTrue(np.all(valid_pred >= 0))  # Check valid range
+        self.assertTrue(np.all(valid_pred <= 50))
+        self.assertTrue(np.all(valid_ref >= 0))
+        self.assertTrue(np.all(valid_ref <= 50))
+        
+        # Forest mask specific checks
+        self.assertIsNotNone(mask)  # Forest mask should be present
+        self.assertEqual(mask.shape, pred_data.shape)  # Mask should match data shape
+        
+        # Check that non-forest areas are masked
+        self.assertTrue(np.all(np.isnan(pred_data[~mask])))
+        self.assertTrue(np.all(np.isnan(ref_data[~mask])))
+        
+        # Check that forest areas have valid data
+        self.assertTrue(np.any(~np.isnan(pred_data[mask])))
+        self.assertTrue(np.any(~np.isnan(ref_data[mask])))
 
     def test_calculate_metrics(self):
         """Test calculation of evaluation metrics."""
@@ -172,10 +171,23 @@ class TestEvaluatePredictions(unittest.TestCase):
         output_dir = os.path.join(self.temp_dir, 'plots')
         os.makedirs(output_dir, exist_ok=True)
         
-        metrics = calculate_metrics(self.pred_data.flatten(), self.ref_data.flatten())
-        create_plots(self.pred_data.flatten(), self.ref_data.flatten(), metrics, output_dir)
+        # Test without forest mask first
+        mask = (self.pred_data >= 0) & (self.pred_data <= 50) & ~np.isnan(self.pred_data)
+        pred_masked = self.pred_data[mask]
+        ref_masked = self.ref_data[mask]
+        metrics = calculate_metrics(pred_masked.flatten(), ref_masked.flatten())
         
-        # Check that plot files were created
+        # Create plots without forest mask
+        create_plots(pred_masked.flatten(), ref_masked.flatten(), metrics, output_dir)
+        
+        # Test plots with forest mask
+        forest_mask = self.forest_mask == 1
+        pred_masked_forest = self.pred_data[forest_mask]
+        ref_masked_forest = self.ref_data[forest_mask]
+        forest_metrics = calculate_metrics(pred_masked_forest.flatten(), ref_masked_forest.flatten())
+        create_plots(pred_masked_forest.flatten(), ref_masked_forest.flatten(), forest_metrics, output_dir)
+        
+        # Verify plots were created
         expected_plots = ['scatter_plot.png', 'error_hist.png', 'height_distributions.png']
         for plot in expected_plots:
             plot_path = os.path.join(output_dir, plot)

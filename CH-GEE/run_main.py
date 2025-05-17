@@ -52,15 +52,17 @@ def main(type: str):
         # time.sleep(60)  # Wait for files to be downloaded
     
     # Get the most recent training data, stack, and mask files
-    def get_latest_file(dir_path: str, pattern: str) -> str:
+    def get_latest_file(dir_path: str, pattern: str, required: bool = True) -> str:
         files = [f for f in os.listdir(dir_path) if f.startswith(pattern)]
         if not files:
-            raise FileNotFoundError(f"No files matching pattern '{pattern}' found in {dir_path}")
+            if required:
+                raise FileNotFoundError(f"No files matching pattern '{pattern}' found in {dir_path}")
+            return None
         return os.path.join(dir_path, max(files, key=lambda x: os.path.getmtime(os.path.join(dir_path, x))))
 
     training_file = get_latest_file(output_dir, 'training_data')
     stack_file = get_latest_file(output_dir, 'stack')
-    mask_file = get_latest_file(output_dir, 'forestMask')
+    mask_file = get_latest_file(output_dir, 'forestMask')  # Forest mask is optional
 
     if type =='train_predict':
         try:
@@ -71,10 +73,11 @@ def main(type: str):
                 'python', 'train_predict_map.py',
                 '--training-data', training_file,
                 '--stack', stack_file,
-                '--mask', mask_file,
+                '--mask', mask_file,  # Used as both quality mask and forest mask
                 '--output-dir', output_dir,
                 '--output-filename', 'local_canopy_height_predictions.tif',
-                '--test-size', '0.2'
+                '--test-size', '0.2',
+                '--apply-forest-mask'  # Add flag to indicate mask should be used as forest mask
             ]
 
             # Run local training and prediction
@@ -93,7 +96,8 @@ def main(type: str):
             '--output', eval_dir,
             '--pdf',
             '--training', training_file,
-            '--merged', stack_file
+            '--merged', stack_file,
+            '--forest-mask', mask_file
         ]
 
         print("\nRunning evaluation...")

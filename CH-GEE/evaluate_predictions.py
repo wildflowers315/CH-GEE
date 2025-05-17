@@ -62,6 +62,7 @@ def main():
     parser = argparse.ArgumentParser(description='Evaluate canopy height predictions against reference data')
     parser.add_argument('--pred', type=str, help='Path to prediction raster', default='chm_outputs/predictions.tif')
     parser.add_argument('--ref', type=str, help='Path to reference raster', default='chm_outputs/dchm_09id4.tif')
+    parser.add_argument('--forest-mask', type=str, help='Path to forest mask raster', default=None)
     parser.add_argument('--output', type=str, help='Output directory', default='chm_outputs/evaluation')
     parser.add_argument('--pdf', action='store_true', help='Generate PDF report with 2x2 comparison grid')
     parser.add_argument('--training', type=str, help='Path to training data CSV for additional metadata', default='chm_outputs/training_data.csv')
@@ -90,15 +91,19 @@ def main():
     try:
         
         print("Loading and preprocessing rasters...")
-        pred_data, ref_data, transform = load_and_align_rasters(pred_path, ref_path, output_dir)
+        pred_data, ref_data, transform, forest_mask = load_and_align_rasters(
+            pred_path, ref_path, args.forest_mask, output_dir)
         
         # Create masks for no data values and outliers
         print("\nCreating valid data masks...")
-        pred_mask = (pred_data >= 0) & (pred_data <= 50)  # Reasonable height range for trees
-        ref_mask = (ref_data >= 0) & (ref_data <= 50)     # Same range for reference
+        pred_mask = (pred_data >= 0) & (pred_data <= 50) & ~np.isnan(pred_data)  # Reasonable height range for trees
+        ref_mask = (ref_data >= 0) & (ref_data <= 50) & ~np.isnan(ref_data)      # Same range for reference
         
         # Combine all masks
         mask = pred_mask & ref_mask
+        if forest_mask is not None:
+            mask = mask & forest_mask
+            print(f"Applied forest mask - {np.sum(forest_mask):,} forest pixels")
         
         valid_pixels = np.sum(mask)
         total_pixels = mask.size

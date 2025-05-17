@@ -52,17 +52,19 @@ def scale_adjust_band(band_data, min_val, max_val, contrast=1.0, gamma=1.0):
     return scaled_uint8
 
 
-def load_rgb_composite(merged_path, target_shape, transform):
+def load_rgb_composite(merged_path, target_shape, transform, temp_dir=None):
     """Load and process RGB composite from merged data."""
-    merged_file_name = merged_path.split('/')[-1]
-    output_dir = os.path.dirname(merged_path)
-    merged_clipped_path = os.path.join(output_dir, f"{merged_file_name.split('.')[0]}_clipped.tif")
+    merged_file_name = os.path.basename(merged_path)
+    if temp_dir is None:
+        temp_dir = os.path.dirname(merged_path)
+    merged_clipped_path = os.path.join(temp_dir, f"{merged_file_name.split('.')[0]}_clipped.tif")
+    os.makedirs(os.path.dirname(merged_clipped_path), exist_ok=True)
         
     try:
         with rasterio.open(merged_path) as src:
-            if src.count >= 4:  # Need at least 4 bands for B4,B3,B2
-                # Use B4,B3,B2 for natural color (R,G,B)
-                rgb_bands = [3, 2, 1]  # 1-based band numbers
+            if src.count >= 4:  # Check if we have enough bands
+                # Use S2 bands 4,3,2 (R,G,B) for natural color
+                rgb_bands = [3, 2, 1]  # B4 (R, 665nm), B3 (G, 560nm), B2 (B, 490nm)
                 rgb = np.zeros((target_shape[0], target_shape[1], 3), dtype=np.float32)
                 
                 from rasterio.warp import reproject, Resampling
@@ -80,11 +82,22 @@ def load_rgb_composite(merged_path, target_shape, transform):
                     )
                     rgb[:, :, i] = band_resampled
                 
-                # Apply scaling and contrast adjustment
+                # Apply band-specific scaling for Sentinel-2 reflectance values
                 rgb_norm = np.zeros_like(rgb, dtype=np.uint8)
+                # Sentinel-2 L2A typical reflectance ranges
+                scale_params = [
+                    {'min': 0, 'max': 3000, 'contrast': 1.2, 'gamma': 0.8},  # Red (B4)
+                    {'min': 0, 'max': 3000, 'contrast': 1.2, 'gamma': 0.8},  # Green (B3)
+                    {'min': 0, 'max': 3000, 'contrast': 1.2, 'gamma': 0.8}    # Blue (B2)
+                ]
                 for i in range(3):
                     rgb_norm[:,:,i] = scale_adjust_band(
-                        rgb[:,:,i], 0, 3000, contrast=1.2, gamma=0.8)
+                        rgb[:,:,i],
+                        scale_params[i]['min'],
+                        scale_params[i]['max'],
+                        contrast=scale_params[i]['contrast'],
+                        gamma=scale_params[i]['gamma']
+                    )
                 
                 # save the RGB composite
                 profile = src.profile.copy()
@@ -97,34 +110,41 @@ def load_rgb_composite(merged_path, target_shape, transform):
                 })
                 try:
                     with rasterio.open(merged_clipped_path, 'w', **profile) as dst:
-                        dst.write(rgb_norm.transpose(2, 1, 0)
-                              )
+                        # Write bands in correct order (R,G,B)
+                        dst.write(rgb_norm.transpose(2, 1, 0))
                 except Exception as e:
-                    print(f"Error saving RGB composite: {e}")
-                    
+                    print(f"Warning: Could not save RGB composite: {e}")
+                    print(f"Attempted to save to: {merged_clipped_path}")
+                    # Continue even if saving fails - we can still use the RGB data in memory
                 return rgb_norm
     except Exception as e:
         print(f"Error creating RGB composite: {e}")
     return None
 
 
-def create_2x2_visualization(ref_data, pred_data, diff_data, merged_path, transform, output_path, mask=None):
+def create_2x2_visualization(ref_data, pred_data, diff_data, merged_path, transform, output_path, mask=None, forest_mask=None, temp_dir=None):
     """Create 2x2 grid with reference, prediction, difference and RGB data."""
     
     # Load RGB composite if available
     rgb_norm = None
     if merged_path and os.path.exists(merged_path):
-        rgb_norm = load_rgb_composite(merged_path, pred_data.shape, transform)
-    
+        rgb_norm = load_rgb_composite(merged_path, pred_data.shape, transform, temp_dir)
+    else:
+        print("Merged data not found or invalid. Skipping RGB composite creation.")
     # Apply mask if provided
-    if mask is not None and rgb_norm is not None:
-        # Create a 3D mask by expanding dimensions
-        mask_3d = np.repeat(mask[:, :, np.newaxis], 3, axis=2)
-        # Apply mask - set masked areas to 0
-        rgb_norm = np.where(mask_3d, rgb_norm, 0)    # Create visualization grid
+    # Combine validity mask with forest mask if provided
+    final_mask = mask if mask is not None else np.ones_like(pred_data, dtype=bool)
+    if forest_mask is not None:
+        final_mask = final_mask & forest_mask
+        
+    # if final_mask is not None and rgb_norm is not None:
+    #     # Create a 3D mask by expanding dimensions
+    #     mask_3d = np.repeat(final_mask[:, :, np.newaxis], 3, axis=2)
+    #     # Apply mask - set masked areas to 0
+    #     rgb_norm = np.where(mask_3d, rgb_norm, 0)
         
     from evaluation_utils import create_comparison_grid
-    create_comparison_grid(ref_data, pred_data, diff_data, rgb_norm, output_path)
+    create_comparison_grid(ref_data, pred_data, diff_data, rgb_norm, output_path, forest_mask=forest_mask)
     return output_path
 
 
@@ -159,9 +179,9 @@ def calculate_area(bounds: tuple, crs: CRS):
     return area_m2 / 10000
 
 
-def save_evaluation_to_pdf(pred_path, ref_path, pred_data, ref_data, metrics, 
+def save_evaluation_to_pdf(pred_path, ref_path, pred_data, ref_data, metrics,
                          output_dir, training_data_path=None, merged_data_path=None,
-                         mask=None, area_ha=None, validation_info=None, plot_paths=None):
+                         mask=None, forest_mask=None, area_ha=None, validation_info=None, plot_paths=None):
     """Create PDF report with evaluation results."""
     os.makedirs(output_dir, exist_ok=True)
     
@@ -172,7 +192,16 @@ def save_evaluation_to_pdf(pred_path, ref_path, pred_data, ref_data, metrics,
     grid_path = os.path.join(output_dir, 'comparison_grid.png')
     with rasterio.open(pred_path) as src:
         transform = src.transform
-    create_2x2_visualization(ref_data, pred_data, diff_data, merged_data_path, transform, grid_path, mask)
+    # Create a temp directory for RGB composites within output_dir
+    rgb_temp_dir = os.path.join(output_dir, 'rgb_temp')
+    os.makedirs(rgb_temp_dir, exist_ok=True)
+    
+    create_2x2_visualization(
+        ref_data, pred_data, diff_data,
+        merged_data_path, transform, grid_path,
+        mask=mask, forest_mask=forest_mask,
+        temp_dir=rgb_temp_dir
+    )
     
     # Get area if not provided
     if area_ha is None:

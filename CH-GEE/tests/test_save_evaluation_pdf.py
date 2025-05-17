@@ -29,10 +29,12 @@ class TestSaveEvaluationPDF(unittest.TestCase):
         cls.ref_path = os.path.join(cls.temp_dir, 'ref.tif')
         cls.pred_path = os.path.join(cls.temp_dir, 'pred.tif')
         cls.merged_path = os.path.join(cls.temp_dir, 'merged.tif')
+        cls.forest_mask_path = os.path.join(cls.temp_dir, 'forest_mask.tif')
         
         # Sample data
         ref_data = np.random.normal(15, 5, (100, 100))
         pred_data = ref_data + np.random.normal(0, 2, (100, 100))
+        forest_mask = np.random.choice([0, 1], size=(100, 100), p=[0.3, 0.7])  # 70% forest coverage
         
         # Create sample rasters
         transform = from_origin(10.0, 50.0, 0.001, 0.001)
@@ -60,6 +62,11 @@ class TestSaveEvaluationPDF(unittest.TestCase):
         rgb_data = np.random.randint(0, 255, (3, 100, 100)).astype('float32')
         with rasterio.open(cls.merged_path, 'w', **profile) as dst:
             dst.write(rgb_data)
+            
+        # Write forest mask raster
+        profile['count'] = 1
+        with rasterio.open(cls.forest_mask_path, 'w', **profile) as dst:
+            dst.write(forest_mask.astype('float32'), 1)
         
         # Create sample training data CSV
         cls.train_path = os.path.join(cls.temp_dir, 'training_data.csv')
@@ -90,14 +97,30 @@ class TestSaveEvaluationPDF(unittest.TestCase):
     def test_create_2x2_visualization(self):
         """Test creation of 2x2 comparison grid."""
         output_path = os.path.join(self.temp_dir, 'grid.png')
+        # Test without forest mask
         result = create_2x2_visualization(
-            self.ref_path,
-            self.pred_path,
+            np.random.rand(100, 100),  # ref_data
+            np.random.rand(100, 100),  # pred_data
+            np.random.rand(100, 100),  # diff_data
             self.merged_path,
+            np.eye(3),  # transform
             output_path
         )
         self.assertTrue(os.path.exists(result))
         self.assertEqual(result, output_path)
+        
+        # Test with forest mask
+        forest_mask = np.random.choice([True, False], size=(100, 100))
+        result = create_2x2_visualization(
+            np.random.rand(100, 100),  # ref_data
+            np.random.rand(100, 100),  # pred_data
+            np.random.rand(100, 100),  # diff_data
+            self.merged_path,
+            np.eye(3),  # transform
+            output_path,
+            forest_mask=forest_mask
+        )
+        self.assertTrue(os.path.exists(result))
 
     def test_get_training_info(self):
         """Test extraction of training data information."""
@@ -127,11 +150,12 @@ class TestSaveEvaluationPDF(unittest.TestCase):
 
     def test_save_evaluation_to_pdf(self):
         """Test full PDF report generation."""
-        # Create test data
-        pred_data = np.random.normal(15, 5, 1000)
-        ref_data = pred_data + np.random.normal(0, 2, 1000)
+        # Create 2D test data
+        pred_data = np.random.normal(15, 5, (100, 100))
+        ref_data = pred_data + np.random.normal(0, 2, (100, 100))
         
         # Generate PDF
+        # Test without forest mask
         pdf_path = save_evaluation_to_pdf(
             self.pred_path,
             self.ref_path,
@@ -141,6 +165,21 @@ class TestSaveEvaluationPDF(unittest.TestCase):
             self.temp_dir,
             training_data_path=self.train_path,
             merged_data_path=self.merged_path
+        )
+        self.assertTrue(os.path.exists(pdf_path))
+        
+        # Test with forest mask
+        forest_mask = np.random.choice([True, False], size=pred_data.shape)
+        pdf_path_with_mask = save_evaluation_to_pdf(
+            self.pred_path,
+            self.ref_path,
+            pred_data,
+            ref_data,
+            self.metrics,
+            self.temp_dir,
+            training_data_path=self.train_path,
+            merged_data_path=self.merged_path,
+            forest_mask=forest_mask
         )
         
         # Verify PDF was created
