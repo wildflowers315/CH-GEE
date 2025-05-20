@@ -48,10 +48,14 @@ def get_gedi_data(
         # Then apply quality filters
         quality_ok = img.select("quality_flag").eq(1)
         degrade_ok = img.select("degrade_flag").eq(0)
+        sensitivity_ok = img.select('sensitivity').gt(0.95)
+        fullPowerBeam_ok = img.select('beam').gt(4)
         # Combine all conditions
         return img.updateMask(has_data) \
                  .updateMask(quality_ok) \
-                 .updateMask(degrade_ok)
+                 .updateMask(degrade_ok) \
+                .updateMask(sensitivity_ok) \
+                .updateMask(fullPowerBeam_ok)
     
     # Select and rename the quantile
     # def rename_property(image):

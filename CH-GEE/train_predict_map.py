@@ -14,6 +14,8 @@ import warnings
 import argparse
 warnings.filterwarnings('ignore')
 
+from evaluate_predictions import calculate_metrics
+
 def load_training_data(csv_path: str, mask_path: Optional[str] = None) -> Tuple[np.ndarray, np.ndarray]:
     """
     Load training data from CSV file and optionally mask with forest mask.
@@ -157,9 +159,13 @@ def train_model(X: np.ndarray, y: np.ndarray, test_size: float = 0.2) -> RandomF
     
     # Print validation score
     val_score = rf.score(X_val, y_val)
-    print(f"Validation R² score: {val_score:.3f}")
+    y_pred = rf.predict(X_val)
+    train_metrix = calculate_metrics(y_pred, y_val)
+    # print(f"Validation R² score: {val_score:.3f}")
+    for matrix, value in train_metrix.items():
+        print (f"{matrix}: {value:.3f}")
     
-    return rf
+    return rf, train_metrix
 
 def save_predictions(predictions: np.ndarray, src: rasterio.DatasetReader, output_path: str,
                     mask_path: Optional[str] = None) -> None:
@@ -238,7 +244,7 @@ def main():
     
     # Train model
     print("Training model...")
-    model = train_model(X, y, args.test_size)
+    model, train_metrix = train_model(X, y, args.test_size)
     
     # Load prediction data
     print("Loading prediction data...")
@@ -249,9 +255,10 @@ def main():
     print("Generating predictions...")
     predictions = model.predict(X_pred)
     print(f"Generated {len(predictions)} predictions")
+    output_path = Path(args.stack).stem.replace('stack_', 'predictCH')
     
     # Save predictions
-    output_path = os.path.join(args.output_dir, args.output_filename)
+    # output_path = os.path.join(args.output_dir, output_filename)
     print(f"Saving predictions to: {output_path}")
     save_predictions(predictions, src, output_path, args.mask)
     print("Done!")

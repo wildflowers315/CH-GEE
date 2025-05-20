@@ -25,7 +25,7 @@ def check_predictions(pred_path: str):
         return True
 
 
-def calculate_metrics(pred: np.ndarray, ref: np.ndarray):
+def calculate_metrics(pred: np.ndarray, ref: np.ndarray)->dict:
     """Calculate evaluation metrics."""
     mse = mean_squared_error(ref, pred)
     rmse = np.sqrt(mse)

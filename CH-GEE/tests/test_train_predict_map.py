@@ -158,9 +158,10 @@ class TestTrainPredictMap(unittest.TestCase):
     def test_train_model(self):
         """Test model training"""
         X, y = load_training_data(self.csv_path)
-        model = train_model(X, y, test_size=0.2)
+        model, metrix = train_model(X, y, test_size=0.2)
         
         self.assertIsNotNone(model)
+        self.assertIsNotNone(metrix)
         self.assertTrue(hasattr(model, 'predict'))
         
         test_pred = model.predict(X[:2])

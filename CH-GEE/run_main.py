@@ -75,7 +75,7 @@ def main(type: str):
                 '--stack', stack_file,
                 '--mask', mask_file,  # Used as both quality mask and forest mask
                 '--output-dir', output_dir,
-                '--output-filename', 'local_canopy_height_predictions.tif',
+                # '--output-filename', 'local_canopy_height_predictions.tif',
                 '--test-size', '0.2',
                 '--apply-forest-mask'  # Add flag to indicate mask should be used as forest mask
             ]
