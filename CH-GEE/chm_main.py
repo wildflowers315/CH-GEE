@@ -306,8 +306,8 @@ def main():
     try:    
         dem = ee.ImageCollection("JAXA/ALOS/AW3D30/V3_2").mosaic().select('DSM')
         proj = dem.select(0).projection()
-        slope = ee.Terrain.slope(dem.setDefaultProjection(proj))
-        aspect = ee.Terrain.aspect(dem.setDefaultProjection(proj))
+        # slope = ee.Terrain.slope(dem.setDefaultProjection(proj)) # does not work
+        aspect = ee.Terrain.aspect(dem.setDefaultProjection(proj)) # does not work
         # slope = ee.Terrain.slope(dem)
         # aspect = ee.Terrain.aspect(dem)
         dem_data_AW3D30 = dem.addBands(slope).addBands(aspect).select(['DSM', 'slope', 'aspect'], ['AW3D30_elevation', 'AW3D30_slope', 'AW3D30_aspect']).clip(aoi)
@@ -337,6 +337,30 @@ def main():
     # Merge datasets
     merged = s2.addBands(s1).addBands(alos2).addBands(dem_data).addBands(canopy_ht)
     
+    # GLCM texture data
+    # Scale and convert to integer if necessary.
+    scaled_band = merged.toInt()
+    # Compute GLCM textures with a neighborhood size of 5
+    glcm = scaled_band.glcmTexture(size=5)
+
+    # Select only bands ending with '_savg' and rename them with a GLCM prefix
+    band_names = glcm.bandNames()
+    band_length = band_names.size().getInfo()
+    savg_bands = band_names.filter(ee.Filter.stringEndsWith("item", "_savg"))
+
+    # # Map to create a renaming dictionary
+    # # This adds "GLCM_" prefix to all selected bands
+    # def rename_band(name):
+    #     return ee.String("GLCM_").cat(name)
+
+    # new_names = savg_bands.map(rename_band)
+
+    # Select and rename bands
+    glcm_filtered = glcm.select(savg_bands).float()
+
+    # Add the filtered texture bands to the original image
+    merged = merged.addBands(glcm_filtered)
+    
     # Get predictor names before any masking
     print("Getting band information...")
     predictor_names = merged.bandNames()
@@ -354,7 +378,6 @@ def main():
     # Export forest mask using export_tif_via_ee
     forest_mask_prefix = f'forestMask{args.mask_type}{ndvi_threshold_percent}'
     # forest_mask_path = os.path.join(args.output_dir, f'{forest_mask_filename}.tif')
-
 
     # Get GEDI data
     print("Loading GEDI data...")
@@ -411,7 +434,7 @@ def main():
     # Export training data if requested
     if args.export_training:
         print('Exporting training data and tif through Earth Engine...')
-        training_prefix = f'training_data_{args.mask_type}{ndvi_threshold_percent}'
+        training_prefix = f'training_data_{args.mask_type}{ndvi_threshold_percent}_b{band_length*2}'
         # export_training_data_via_ee(reference_data, training_prefix)
         export_featurecollection_to_csv(reference_data, training_prefix)
         print(f"Exporting training data as CSV: {training_prefix}.csv")
