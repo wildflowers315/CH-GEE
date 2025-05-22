@@ -73,8 +73,10 @@ def main(type: str):
                 '--mask', mask_file,  # Used as both quality mask and forest mask
                 '--output-dir', output_dir,
                 # '--output-filename', 'local_canopy_height_predictions.tif',
-                '--test-size', '0.2',
-                '--apply-forest-mask'  # Add flag to indicate mask should be used as forest mask
+                '--test-size', '0.1',
+                '--apply-forest-mask',  # Add flag to indicate mask should be used as forest mask
+                '--model', 'mlp', # default is 'rf'
+                # '--batch_size', '32', # default is 64
             ]
             # Run local training and prediction
             print("\nRunning local model training and prediction...")
@@ -104,6 +106,6 @@ if __name__ == "__main__":
     # Example usage
     # main('data_preparation')
     # main('height_analysis')
-    # main('train_predict')
-    main('evaluate')
+    main('train_predict')
+    # main('evaluate')
     

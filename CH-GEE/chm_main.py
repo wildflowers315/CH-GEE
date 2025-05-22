@@ -121,8 +121,6 @@ def export_training_data(reference_data: ee.FeatureCollection, output_dir: str):
     # Get feature properties as a list of dictionaries
     features = reference_data.getInfo()['features']
     
-
-    
     # Extract properties and coordinates
     data = []
     for feature in features:
@@ -131,7 +129,6 @@ def export_training_data(reference_data: ee.FeatureCollection, output_dir: str):
         properties['longitude'] = geometry[0]
         properties['latitude'] = geometry[1]
         data.append(properties)
-    
     
     # Convert to DataFrame and save
     df = pd.DataFrame(data)
@@ -142,9 +139,6 @@ def export_training_data(reference_data: ee.FeatureCollection, output_dir: str):
     df.to_csv(output_path, index=False)
     print(f"Training data exported to: {output_path}")
     
-    # json_path = os.path.join(output_dir, f"training_data_b{band_length}_{df_size}.json")
-    # with open(json_path, 'w') as f:
-    #     json.dump(features, f)
     return output_path
 
 def export_featurecollection_to_csv(feature_collection, export_name):
@@ -205,25 +199,6 @@ def export_tif_via_ee(image: ee.Image, aoi: ee.Geometry, prefix: str, scale: int
     
     image_area_ha = int(round(image_area_ha.getInfo(), 0))
     
-    # image_area = image.multiply(ee.Image.pixelArea().divide(10000)).rename('area')
-    # image_area_ha = image_area.reduceRegion(
-    #     reducer=ee.Reducer.sum(),
-    #     geometry=aoi,
-    #     scale=scale,
-    #     maxPixels=1e10
-    # ).get('area')
-    # image_area_ha = int(round(image_area_ha.getInfo(), 0))
-    
-    # first_band = image.bandNames().get(0)
-    # region = image.geometry().bounds()
-    # info = image.select(first_band).reduceRegion(
-    #     reducer=ee.Reducer.count(),
-    #     geometry=region,
-    #     scale=scale,
-    #     maxPixels=1e13
-    # )
-    # pixel_count = image_area_ha.getInfo():.1f
-    
     # Generate a unique task ID (sanitize prefix and ensure valid characters)
     clean_prefix = ''.join(c for c in prefix if c.isalnum() or c in '_-')
     task_id = f"{clean_prefix}_b{band_count}_s{scale}_p{image_area_ha}"
@@ -248,14 +223,6 @@ def export_tif_via_ee(image: ee.Image, aoi: ee.Geometry, prefix: str, scale: int
     
     print(f"Export started with task ID: {task_id}")
     print("The file will be available in your Google Drive once the export completes.")
-    # print(f"You can manually download it and save to: {output_path}")
-    
-    # # Optionally monitor the task
-    # while task.status()['state'] in ['READY', 'RUNNING']:
-    #     print(f"Task status: {task.status()['state']}")
-    #     time.sleep(5)
-    
-    # print(f"Task completed with status: {task.status()['state']}")
     
 def main():
     """Main function to run the canopy height mapping process."""
@@ -274,7 +241,6 @@ def main():
     
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
-    
     
     # Get S1, S2 satellite data
     print("Collecting satellite data...")
@@ -318,7 +284,6 @@ def main():
     # Canopy height data
     canopy_ht = get_canopyht_data(aoi)
     
-    
     # Reproject datasets to the same projection
     s2_projection = s2.projection()
     s2 = s2.float()                                       # Convert to Float32
@@ -327,13 +292,6 @@ def main():
     alos2 = alos2.float()        # Convert to Float32
     canopy_ht = canopy_ht.float()  # Convert to Float32    
 
-    # Convert to Float32
-    # dem_data = dem_data.reproject(s2_projection).float()  # Convert to Float32
-    # s1 = s1.reproject(s2_projection).float()              # Convert to Float32
-    # alos2 = alos2.reproject(s2_projection).float()        # Convert to Float32
-    # canopy_ht = canopy_ht.reproject(s2_projection).float()  # Convert to Float32    
-    
-    
     # Merge datasets
     merged = s2.addBands(s1).addBands(alos2).addBands(dem_data).addBands(canopy_ht)
     
@@ -347,13 +305,6 @@ def main():
     band_names = glcm.bandNames()
     band_length = band_names.size().getInfo()
     savg_bands = band_names.filter(ee.Filter.stringEndsWith("item", "_savg"))
-
-    # # Map to create a renaming dictionary
-    # # This adds "GLCM_" prefix to all selected bands
-    # def rename_band(name):
-    #     return ee.String("GLCM_").cat(name)
-
-    # new_names = savg_bands.map(rename_band)
 
     # Select and rename bands
     glcm_filtered = glcm.select(savg_bands).float()
@@ -401,35 +352,6 @@ def main():
         tileScale=1,
         geometries=True
     )
-    
-    
-    # Calculate forest area in hectares
-    # mask_area = forest_mask.multiply(ee.Image.pixelArea().divide(10000)).rename('area')
-    # forest_area_ha = mask_area.reduceRegion(
-    #     reducer=ee.Reducer.sum(),
-    #     geometry=aoi,
-    #     scale=args.scale,
-    #     maxPixels=1e10
-    #     ).get('area')
-    
-    
-    # # extract reference data as geodataframe
-    # training_path = export_training_data(reference_data, args.output_dir)
-    # reference_df = pd.read_csv(training_path)
-    # # remove the training data csv 
-    # os.remove(training_path)
-    # reference_gdf = reference_df.drop(columns=['longitude', 'latitude'])
-    
-    # Apply forest mask to reference data and merged data
-    # reference_gdf = apply_forest_mask(reference_gdf, args.mask_type, aoi,
-    #                                  args.year, args.start_date, args.end_date,
-    #                                  args.ndvi_threshold)
-    # reference_data = apply_forest_mask(reference_data, args.mask_type, aoi,
-    #                                  args.year, args.start_date, args.end_date,
-    #                                  args.ndvi_threshold, args.scale)
-    # merged = apply_forest_mask(merged, args.mask_type, aoi,
-    #                          args.year, args.start_date, args.end_date,
-    #                          args.ndvi_threshold, args.scale)
     
     # Export training data if requested
     if args.export_training:

@@ -2,6 +2,10 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
+import torch
+import torch.optim as optim
+import torch.nn as nn
+from dl_models import MLPRegressionModel, create_normalized_dataloader
 import rasterio
 from rasterio.mask import geometry_mask
 from shapely.geometry import Point, box
@@ -12,6 +16,7 @@ from pathlib import Path
 from typing import Tuple, Optional
 import warnings
 import argparse
+from tqdm import tqdm
 warnings.filterwarnings('ignore')
 
 from evaluate_predictions import calculate_metrics
@@ -134,6 +139,23 @@ def load_prediction_data(stack_path: str, mask_path: Optional[str] = None) -> Tu
 
 def save_metrics_and_importance(metrics: dict, importance_data: dict, output_dir: str) -> None:
     """
+    Save training metrics and feature importance to JSON file, ensuring all values are JSON serializable.
+    """
+    # Convert any non-serializable values to Python native types
+    serializable_metrics = {}
+    for key, value in metrics.items():
+        if hasattr(value, 'item'):  # Handle numpy/torch numbers
+            serializable_metrics[key] = value.item()
+        else:
+            serializable_metrics[key] = float(value)
+    
+    serializable_importance = {}
+    for key, value in importance_data.items():
+        if hasattr(value, 'item'):  # Handle numpy/torch numbers
+            serializable_importance[key] = value.item()
+        else:
+            serializable_importance[key] = float(value)
+    """
     Save training metrics and feature importance to JSON file.
     
     Args:
@@ -146,8 +168,8 @@ def save_metrics_and_importance(metrics: dict, importance_data: dict, output_dir
     
     # Combine metrics and importance data
     output_data = {
-        "train_metrics": metrics,
-        "feature_importance": importance_data
+        "train_metrics": serializable_metrics,
+        "feature_importance": serializable_importance
     }
     
     # Create output path
@@ -158,60 +180,130 @@ def save_metrics_and_importance(metrics: dict, importance_data: dict, output_dir
         json.dump(output_data, f, indent=4)
     print(f"Saved model evaluation data to: {output_path}")
 
-def train_model(X: np.ndarray, y: np.ndarray, test_size: float = 0.2, feature_names: Optional[list] = None) -> Tuple[RandomForestRegressor, dict, dict]:
+def train_model(X: np.ndarray, y: np.ndarray, model_type: str = 'rf', batch_size: int = 64,
+                test_size: float = 0.2, feature_names: Optional[list] = None,
+                n_bands: Optional[int] = None) -> Tuple[object, dict, dict]:
     """
-    Train Random Forest model with optional validation split.
+    Train model with optional validation split.
     
     Args:
         X: Feature matrix
         y: Target variable
+        model_type: Type of model ('rf' or 'mlp')
+        batch_size: Batch size for MLP training
         test_size: Proportion of data to use for validation
+        feature_names: Optional list of feature names
         
     Returns:
-        Trained model
+        Trained model, training metrics, and feature importance/weights
     """
     # Split data
     X_train, X_val, y_train, y_val = train_test_split(
         X, y, test_size=test_size, random_state=42
     )
     
-    # Train model
-    rf = RandomForestRegressor(
-        n_estimators=500,
-        min_samples_leaf=5,
-        max_features='sqrt',
-        n_jobs=-1,
-        random_state=42
-    )
-    rf.fit(X_train, y_train)
-    
-    # Print validation score
-    val_score = rf.score(X_val, y_val)
-    y_pred = rf.predict(X_val)
-    train_metrix = calculate_metrics(y_pred, y_val)
-    # print(f"Validation R² score: {val_score:.3f}")
-    for matrix, value in train_metrix.items():
-        print(f"{matrix}: {value:.3f}")
-    
-    # Get feature importance
-    importance = rf.feature_importances_
-    if feature_names is None:
-        feature_names = [f"feature_{i}" for i in range(len(importance))]
-    
-    # Create importance dictionary
-    importance_data = {
-        name: float(imp) for name, imp in zip(feature_names, importance)
-    }
+    if model_type == 'rf':
+        # Train Random Forest model
+        model = RandomForestRegressor(
+            n_estimators=500,
+            min_samples_leaf=5,
+            max_features='sqrt',
+            n_jobs=-1,
+            random_state=42
+        )
+        model.fit(X_train, y_train)
+        
+        # Get predictions
+        y_pred = model.predict(X_val)
+        train_metrics = calculate_metrics(y_pred, y_val)
+        
+        # Get feature importance
+        importance = model.feature_importances_
+        if feature_names is None:
+            feature_names = [f"feature_{i}" for i in range(len(importance))]
+        
+        importance_data = {
+            name: float(imp) for name, imp in zip(feature_names, importance)
+        }
+        
+    else:  # MLP model
+        # Create normalized dataloaders
+        train_loader, val_loader, scaler_mean, scaler_std = create_normalized_dataloader(
+            X_train, X_val, y_train, y_val, batch_size=batch_size, n_bands=n_bands
+        )
+        
+        # Initialize model
+        model = MLPRegressionModel(input_size=X.shape[1])
+        if torch.cuda.is_available():
+            model = model.cuda()
+            
+        # Training setup
+        criterion = nn.MSELoss()
+        optimizer = optim.Adam(model.parameters())
+        num_epochs = 100
+        best_val_loss = float('inf')
+        
+        # Training loop with tqdm progress bar
+        for epoch in tqdm(range(num_epochs), desc="Training Epochs"):
+            model.train()
+            for batch_X, batch_y in train_loader:
+                if torch.cuda.is_available():
+                    batch_X, batch_y = batch_X.cuda(), batch_y.cuda()
+                
+                optimizer.zero_grad()
+                outputs = model(batch_X)
+                loss = criterion(outputs, batch_y)
+                loss.backward()
+                optimizer.step()
+            
+            # Validation
+            model.eval()
+            val_predictions = []
+            val_targets = []
+            with torch.no_grad():
+                for batch_X, batch_y in val_loader:
+                    if torch.cuda.is_available():
+                        batch_X, batch_y = batch_X.cuda(), batch_y.cuda()
+                    outputs = model(batch_X)
+                    val_predictions.extend(outputs.cpu().numpy())
+                    val_targets.extend(batch_y.cpu().numpy())
+            
+            val_predictions = np.array(val_predictions)
+            val_targets = np.array(val_targets)
+            val_metrics = calculate_metrics(val_predictions, val_targets)
+            val_loss = val_metrics['RMSE']
+            
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                train_metrics = val_metrics
+        
+        # Get feature importance (using weights of first layer as proxy)
+        with torch.no_grad():
+            weights = model.layers[0].weight.abs().mean(dim=0).cpu().numpy()
+            if feature_names is None:
+                feature_names = [f"feature_{i}" for i in range(len(weights))]
+            importance_data = {}
+            for name, weight in zip(feature_names, weights):
+                # Convert numpy.float32 to Python float
+                weight_value = weight.item() if hasattr(weight, 'item') else float(weight)
+                importance_data[name] = weight_value
+        
+        # Store normalization parameters with model
+        model.scaler_mean = scaler_mean
+        model.scaler_std = scaler_std
     
     # Sort importance by value
     importance_data = dict(sorted(importance_data.items(), key=lambda x: x[1], reverse=True))
     
-    # Print top 5 important features
+    # Print metrics and top features
+    for metric, value in train_metrics.items():
+        print(f"{metric}: {value:.3f}")
+    
     print("\nTop 5 Important Features:")
     for name, imp in list(importance_data.items())[:5]:
         print(f"{name}: {imp:.3f}")
     
-    return rf, train_metrix, importance_data
+    return model, train_metrics, importance_data
 
 def save_predictions(predictions: np.ndarray, src: rasterio.DatasetReader, output_path: str,
                     mask_path: Optional[str] = None) -> None:
@@ -271,6 +363,12 @@ def parse_args():
     #                    help='Output filename for predictions')
     
     # Model parameters
+    parser.add_argument('--model', type=str, default='rf', choices=['rf', 'mlp'],
+                       help='Model type: random forest (rf) or MLP neural network (mlp)')
+    parser.add_argument('--batch-size', type=int, default=64,
+                       help='Batch size for MLP training')
+    parser.add_argument('--n-bands', type=int, default=None,
+                       help='Number of spectral bands for band-wise normalization')
     parser.add_argument('--test-size', type=float, default=0.2,
                        help='Proportion of data to use for validation')
     parser.add_argument('--apply-forest-mask', action='store_true',
@@ -294,10 +392,17 @@ def main():
     
     # Train model
     print("Training model...")
-    model, train_metrix, importance_data = train_model(X, y, args.test_size, feature_names)
+    model, train_metrics, importance_data = train_model(
+        X, y,
+        model_type=args.model,
+        batch_size=args.batch_size,
+        test_size=args.test_size,
+        feature_names=feature_names,
+        n_bands=args.n_bands
+    )
     
     # Save metrics and importance
-    save_metrics_and_importance(train_metrix, importance_data, args.output_dir)
+    save_metrics_and_importance(train_metrics, importance_data, args.output_dir)
     
     # Load prediction data
     print("Loading prediction data...")
@@ -306,7 +411,24 @@ def main():
     
     # Make predictions
     print("Generating predictions...")
-    predictions = model.predict(X_pred)
+    if args.model == 'rf':
+        predictions = model.predict(X_pred)
+    else:  # MLP model
+        model.eval()
+        with torch.no_grad():
+            # Normalize prediction data
+            X_pred_tensor = torch.FloatTensor(X_pred)
+            X_pred_normalized = (X_pred_tensor - model.scaler_mean) / model.scaler_std
+            
+            # Make predictions in batches
+            predictions = []
+            for i in range(0, len(X_pred), args.batch_size):
+                batch = X_pred_normalized[i:i + args.batch_size]
+                if torch.cuda.is_available():
+                    batch = batch.cuda()
+                pred = model(batch)
+                predictions.extend(pred.cpu().numpy())
+            predictions = np.array(predictions)
     print(f"Generated {len(predictions)} predictions")
     output_path = Path(args.output_dir) / f"{Path(args.stack).stem.replace('stack_', 'predictCH')}.tif"
     
