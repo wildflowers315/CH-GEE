@@ -4,6 +4,7 @@ import pandas as pd
 import geopandas as gpd
 import rasterio
 import os
+import json
 from pathlib import Path
 import tempfile
 import shutil
@@ -13,7 +14,8 @@ from train_predict_map import (
     load_training_data,
     load_prediction_data,
     train_model,
-    save_predictions
+    save_predictions,
+    save_metrics_and_importance
 )
 
 class TestTrainPredictMap(unittest.TestCase):
@@ -156,16 +158,64 @@ class TestTrainPredictMap(unittest.TestCase):
         self.assertTrue('CRS mismatch' in str(context.exception))
 
     def test_train_model(self):
-        """Test model training"""
+        """Test model training with feature importance"""
         X, y = load_training_data(self.csv_path)
-        model, metrix = train_model(X, y, test_size=0.2)
+        feature_names = ['band1', 'band2']
+        model, metrics, importance_data = train_model(X, y, test_size=0.2, feature_names=feature_names)
         
+        # Test model basics
         self.assertIsNotNone(model)
-        self.assertIsNotNone(metrix)
+        self.assertIsNotNone(metrics)
         self.assertTrue(hasattr(model, 'predict'))
         
+        # Test predictions
         test_pred = model.predict(X[:2])
         self.assertEqual(len(test_pred), 2)
+        
+        # Test feature importance
+        self.assertIsNotNone(importance_data)
+        self.assertEqual(len(importance_data), len(feature_names))
+        self.assertTrue(all(name in importance_data for name in feature_names))
+        self.assertTrue(all(isinstance(val, float) for val in importance_data.values()))
+        
+        # Test saving metrics and importance
+        output_dir = os.path.join(self.test_dir, 'model_output')
+        os.makedirs(output_dir, exist_ok=True)
+        save_metrics_and_importance(metrics, importance_data, output_dir)
+        
+        # Verify JSON file was created and contains expected data
+        json_path = os.path.join(output_dir, 'model_evaluation.json')
+        self.assertTrue(os.path.exists(json_path))
+        
+        with open(json_path) as f:
+            saved_data = json.load(f)
+            self.assertIn('train_metrics', saved_data)
+            self.assertIn('feature_importance', saved_data)
+            self.assertEqual(saved_data['feature_importance'], importance_data)
+        
+    def test_save_metrics_and_importance(self):
+        """Test saving metrics and feature importance to JSON"""
+        # Create test data
+        metrics = {'r2': 0.85, 'rmse': 0.15}
+        importance_data = {'band1': 0.6, 'band2': 0.4}
+        
+        # Save metrics and importance
+        output_dir = self.test_dir
+        save_metrics_and_importance(metrics, importance_data, output_dir)
+        
+        # Check if file exists
+        json_path = os.path.join(output_dir, 'model_evaluation.json')
+        self.assertTrue(os.path.exists(json_path))
+        
+        # Load and verify JSON content
+        import json
+        with open(json_path) as f:
+            data = json.load(f)
+            
+        self.assertIn('train_metrics', data)
+        self.assertIn('feature_importance', data)
+        self.assertEqual(data['train_metrics'], metrics)
+        self.assertEqual(data['feature_importance'], importance_data)
 
     def test_save_predictions(self):
         """Test saving predictions with CRS checks"""

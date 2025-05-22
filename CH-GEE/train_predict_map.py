@@ -52,9 +52,7 @@ def load_training_data(csv_path: str, mask_path: Optional[str] = None) -> Tuple[
             gdf_masked = gdf[gdf.geometry.within(mask_bounds)]
             
             if len(gdf_masked) == 0:
-                gdf = gdf
-                printt("Warning: No training points fall within the mask bounds. Using all points.")
-                # raise ValueError("No training points fall within the mask bounds")
+                raise ValueError("No training points fall within the mask bounds")
             else:
                 gdf = gdf_masked
             
@@ -134,7 +132,33 @@ def load_prediction_data(stack_path: str, mask_path: Optional[str] = None) -> Tu
         src_copy = rasterio.open(stack_path)
         return X, src_copy
 
-def train_model(X: np.ndarray, y: np.ndarray, test_size: float = 0.2) -> RandomForestRegressor:
+def save_metrics_and_importance(metrics: dict, importance_data: dict, output_dir: str) -> None:
+    """
+    Save training metrics and feature importance to JSON file.
+    
+    Args:
+        metrics: Dictionary of training metrics
+        importance_data: Dictionary of feature importance data
+        output_dir: Directory to save JSON file
+    """
+    import json
+    from pathlib import Path
+    
+    # Combine metrics and importance data
+    output_data = {
+        "train_metrics": metrics,
+        "feature_importance": importance_data
+    }
+    
+    # Create output path
+    output_path = Path(output_dir) / "model_evaluation.json"
+    
+    # Save to JSON
+    with open(output_path, "w") as f:
+        json.dump(output_data, f, indent=4)
+    print(f"Saved model evaluation data to: {output_path}")
+
+def train_model(X: np.ndarray, y: np.ndarray, test_size: float = 0.2, feature_names: Optional[list] = None) -> Tuple[RandomForestRegressor, dict, dict]:
     """
     Train Random Forest model with optional validation split.
     
@@ -153,8 +177,8 @@ def train_model(X: np.ndarray, y: np.ndarray, test_size: float = 0.2) -> RandomF
     
     # Train model
     rf = RandomForestRegressor(
-        n_estimators=100,
-        min_samples_leaf=1,
+        n_estimators=500,
+        min_samples_leaf=5,
         max_features='sqrt',
         n_jobs=-1,
         random_state=42
@@ -167,9 +191,27 @@ def train_model(X: np.ndarray, y: np.ndarray, test_size: float = 0.2) -> RandomF
     train_metrix = calculate_metrics(y_pred, y_val)
     # print(f"Validation R² score: {val_score:.3f}")
     for matrix, value in train_metrix.items():
-        print (f"{matrix}: {value:.3f}")
+        print(f"{matrix}: {value:.3f}")
     
-    return rf, train_metrix
+    # Get feature importance
+    importance = rf.feature_importances_
+    if feature_names is None:
+        feature_names = [f"feature_{i}" for i in range(len(importance))]
+    
+    # Create importance dictionary
+    importance_data = {
+        name: float(imp) for name, imp in zip(feature_names, importance)
+    }
+    
+    # Sort importance by value
+    importance_data = dict(sorted(importance_data.items(), key=lambda x: x[1], reverse=True))
+    
+    # Print top 5 important features
+    print("\nTop 5 Important Features:")
+    for name, imp in list(importance_data.items())[:5]:
+        print(f"{name}: {imp:.3f}")
+    
+    return rf, train_metrix, importance_data
 
 def save_predictions(predictions: np.ndarray, src: rasterio.DatasetReader, output_path: str,
                     mask_path: Optional[str] = None) -> None:
@@ -245,12 +287,17 @@ def main():
     
     # Load training data
     print("Loading training data...")
+    df = pd.read_csv(args.training_data)
+    feature_names = [col for col in df.columns if col not in ['rh', 'longitude', 'latitude']]
     X, y = load_training_data(args.training_data, args.mask)
     print(f"Loaded training data with {X.shape[1]} features and {len(y)} samples")
     
     # Train model
     print("Training model...")
-    model, train_metrix = train_model(X, y, args.test_size)
+    model, train_metrix, importance_data = train_model(X, y, args.test_size, feature_names)
+    
+    # Save metrics and importance
+    save_metrics_and_importance(train_metrix, importance_data, args.output_dir)
     
     # Load prediction data
     print("Loading prediction data...")

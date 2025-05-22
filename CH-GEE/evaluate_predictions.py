@@ -65,6 +65,7 @@ def main():
     parser.add_argument('--forest-mask', type=str, help='Path to forest mask raster', default=None)
     parser.add_argument('--output', type=str, help='Output directory', default='chm_outputs/evaluation')
     parser.add_argument('--pdf', action='store_true', help='Generate PDF report with 2x2 comparison grid')
+    parser.add_argument('--model-eval', type=str, help='Path to model evaluation JSON file', default=None)
     parser.add_argument('--training', type=str, help='Path to training data CSV for additional metadata', default='chm_outputs/training_data.csv')
     parser.add_argument('--merged', type=str, help='Path to merged data raster for RGB visualization', default=None)
     args = parser.parse_args()
@@ -182,6 +183,16 @@ def main():
         if generate_pdf:
             # Create PDF report with all visualizations
             print("\nGenerating PDF report...")
+            
+            # If model evaluation path is not provided, look for it in the parent directory
+            if args.model_eval is None:
+                model_eval_path = os.path.join(os.path.dirname(output_dir), 'model_evaluation.json')
+            else:
+                model_eval_path = args.model_eval
+                
+            if os.path.exists(model_eval_path):
+                print(f"Including model evaluation data from: {model_eval_path}")
+            
             pdf_path = save_evaluation_to_pdf(
                 pred_path,
                 ref_path,

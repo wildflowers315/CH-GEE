@@ -1,16 +1,22 @@
 """Module for generating PDF evaluation reports."""
 
 import os
+import json
 import pandas as pd
 import numpy as np
 import rasterio
 from datetime import datetime
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
+from reportlab.lib import colors
+from reportlab.graphics.shapes import Drawing
+from reportlab.graphics.charts.barcharts import VerticalBarChart
+from reportlab.graphics.charts.legends import Legend
 from rasterio.crs import CRS
 from rasterio.warp import transform_bounds
 
 from raster_utils import load_and_align_rasters
+from utils import get_latest_file
 
 
 def scale_adjust_band(band_data, min_val, max_val, contrast=1.0, gamma=1.0):
@@ -149,6 +155,26 @@ def create_2x2_visualization(ref_data, pred_data, diff_data, merged_path, transf
     return output_path
 
 
+def format_band_names(bands, line_length=80):
+    """Format band names into multiple lines."""
+    lines = []
+    current_line = []
+    current_length = 0
+    
+    for band in bands:
+        if current_length + len(band) + 2 > line_length:  # +2 for comma and space
+            lines.append(', '.join(current_line))
+            current_line = [band]
+            current_length = len(band)
+        else:
+            current_line.append(band)
+            current_length += len(band) + 2  # +2 for comma and space
+            
+    if current_line:
+        lines.append(', '.join(current_line))
+    
+    return '\n'.join(lines)
+
 def get_training_info(csv_path):
     """Extract information from training data."""
     if not os.path.exists(csv_path):
@@ -180,9 +206,38 @@ def calculate_area(bounds: tuple, crs: CRS):
     return area_m2 / 10000
 
 
+def create_feature_importance_chart(data, width, height):
+    """Create a bar chart showing feature importance."""
+    drawing = Drawing(width, height)
+    
+    # Sort data by importance value
+    sorted_data = dict(sorted(data.items(), key=lambda x: x[1], reverse=True))
+    values = list(sorted_data.values())[:10]  # Top 10 features
+    names = list(sorted_data.keys())[:10]
+    
+    # Create and customize the chart
+    chart = VerticalBarChart()
+    chart.x = 50
+    chart.y = 50
+    chart.height = height - 100
+    chart.width = width - 100
+    chart.data = [values]
+    chart.categoryAxis.categoryNames = names
+    chart.categoryAxis.labels.boxAnchor = 'ne'
+    chart.categoryAxis.labels.angle = 45
+    chart.categoryAxis.labels.dx = -10
+    chart.categoryAxis.labels.dy = -20
+    chart.bars[0].fillColor = colors.blue
+    chart.valueAxis.valueMin = 0
+    chart.valueAxis.valueMax = max(values) * 1.1
+    chart.valueAxis.valueStep = max(values) / 5
+    
+    drawing.add(chart)
+    return drawing
+
 def save_evaluation_to_pdf(pred_path, ref_path, pred_data, ref_data, metrics,
-                         output_dir, training_data_path=None, merged_data_path=None,
-                         mask=None, forest_mask=None, area_ha=None, validation_info=None, plot_paths=None):
+                          output_dir, training_data_path=None, merged_data_path=None,
+                          mask=None, forest_mask=None, area_ha=None, validation_info=None, plot_paths=None):
     """Create PDF report with evaluation results."""
     os.makedirs(output_dir, exist_ok=True)
     
@@ -257,9 +312,48 @@ def save_evaluation_to_pdf(pred_path, ref_path, pred_data, ref_data, metrics,
     y -= 15
     c.drawString(70, y, f"Sample Size: {train_info['sample_size']:,}")
     y -= 15
-    c.drawString(70, y, f"Input Bands: {', '.join(train_info['band_names'])}")
+    
+    # Format band names into multiple lines
+    c.drawString(70, y, "Input Bands:")
     y -= 15
+    formatted_bands = format_band_names(train_info['band_names'], line_length=80)
+    for line in formatted_bands.split('\n'):
+        c.drawString(90, y, line)
+        y -= 15
+    
     c.drawString(70, y, f"Height Range: {train_info['height_range'][0]:.1f}m to {train_info['height_range'][1]:.1f}m")
+    
+    # Add training metrics if available
+    chm_outputs_dir = os.path.dirname(os.path.dirname(output_dir))  # Get chm_outputs directory
+    print(f"Looking for model_evaluation.json in: {chm_outputs_dir}")
+    model_eval_path = get_latest_file(chm_outputs_dir, 'model_evaluation', required=False)
+    if model_eval_path:
+        print(f"Found model evaluation file at: {model_eval_path}")
+    else:
+        print("No model evaluation file found")
+    if model_eval_path and os.path.exists(model_eval_path):
+        try:
+            with open(model_eval_path) as f:
+                model_data = json.load(f)
+            
+            if 'train_metrics' in model_data:
+                y -= 25
+                c.setFont("Helvetica-Bold", 12)
+                c.drawString(50, y, "Training Metrics:")
+                c.setFont("Helvetica", 10)
+                y -= 15
+                for metric, value in model_data['train_metrics'].items():
+                    metric_name = metric.replace('_', ' ').title()
+                    if isinstance(value, float):
+                        if metric.endswith('(%)'):
+                            c.drawString(70, y, f"{metric_name}: {value:.1f}%")
+                        else:
+                            c.drawString(70, y, f"{metric_name}: {value:.3f}")
+                    else:
+                        c.drawString(70, y, f"{metric_name}: {value}")
+                    y -= 15
+        except Exception as e:
+            print(f"Warning: Could not load training metrics: {e}")
     
     # Add area info
     y -= 25
@@ -314,6 +408,111 @@ def save_evaluation_to_pdf(pred_path, ref_path, pred_data, ref_data, metrics,
             c.drawImage(plot_paths['height_dist'], width/4, y-plot_height, width=width/2-60, height=plot_height, preserveAspectRatio=True)
         
         c.showPage()
+    
+    def draw_feature_importance_table(c, data, x, y, width):
+        """Draw a table of feature importance values."""
+        # Sort features by importance
+        sorted_features = dict(sorted(data.items(), key=lambda x: x[1], reverse=True))
+        total_importance = sum(sorted_features.values())
+        
+        # Calculate column widths
+        feature_width = width * 0.6
+        value_width = width * 0.2
+        percent_width = width * 0.2
+        
+        # Draw table border
+        c.rect(x, y-14, width, 30)  # Header box
+        
+        # Table header
+        c.setFont("Helvetica-Bold", 10)
+        c.drawString(x + 5, y, "Feature")
+        c.drawRightString(x + feature_width + value_width - 5, y, "Importance")
+        c.drawRightString(x + width - 5, y, "Percent")
+        y -= 15
+        
+        # Draw horizontal line under header
+        c.setLineWidth(0.5)
+        c.line(x, y+2, x + width, y+2)
+        y -= 15
+        
+        # Draw vertical lines
+        c.line(x + feature_width, y+32, x + feature_width, y-14*len(sorted_features))  # After Feature
+        c.line(x + feature_width + value_width, y+32, x + feature_width + value_width, y-14*len(sorted_features))  # After Importance
+        
+        # Table content
+        row = 0
+        c.setFont("Helvetica", 9)
+        for feature, importance in sorted_features.items():
+            # Alternate row colors
+            if row % 2 == 0:
+                c.setFillColorRGB(0.95, 0.95, 0.95)
+                c.rect(x, y-3, width, 14, fill=1, stroke=0)
+            c.setFillColorRGB(0, 0, 0)
+            
+            # Draw row content with padding
+            c.drawString(x + 5, y, feature)
+            c.drawRightString(x + feature_width + value_width - 5, y, f"{importance:.4f}")
+            percentage = (importance / total_importance) * 100
+            c.drawRightString(x + width - 5, y, f"{percentage:.1f}%")
+            
+            # Draw horizontal line after each row
+            if row < len(sorted_features) - 1:
+                c.setLineWidth(0.1)
+                c.line(x, y-7, x + width, y-7)
+            
+            y -= 14
+            row += 1
+            
+            if y < 50:  # Start new column if near bottom
+                y = height - 100
+                x += width + 20
+                row = 0  # Reset row counter for new column
+                
+        return y
+
+    # Fourth page - Feature Importance
+    chm_outputs_dir = os.path.dirname(os.path.dirname(output_dir))  # Get chm_outputs directory
+    model_eval_path = get_latest_file(chm_outputs_dir, 'model_evaluation', required=False)
+    if model_eval_path:
+        try:
+            with open(model_eval_path) as f:
+                model_data = json.load(f)
+            
+            if 'feature_importance' in model_data:
+                # Add title
+                c.setFont("Helvetica-Bold", 14)
+                # c.drawString(50, height-40, "Feature Importance Analysis")
+                
+                # # Add chart
+                # chart = create_feature_importance_chart(model_data['feature_importance'], width-100, height/2)
+                # chart.drawOn(c, 50, height/2)
+                
+                # Add table below chart
+                table_y = height/2 - 20
+                c.setFont("Helvetica-Bold", 12)
+                c.drawString(50, table_y, "Feature Importance Values")
+                table_y -= 20
+                draw_feature_importance_table(c, model_data['feature_importance'], 50, table_y, width/2-70)
+                
+                c.showPage()
+        except Exception as e:
+            print(f"Warning: Could not load feature importance data: {e}")
+    # if model_eval_path and os.path.exists(model_eval_path):
+    #     try:
+    #         with open(model_eval_path) as f:
+    #             model_data = json.load(f)
+            
+    #         if 'feature_importance' in model_data:
+    #             c.setFont("Helvetica-Bold", 14)
+    #             c.drawString(50, height-40, "Feature Importance Analysis")
+                
+    #             # Create and add feature importance chart
+    #             chart = create_feature_importance_chart(model_data['feature_importance'], width-100, height-100)
+    #             chart.drawOn(c, 50, 50)
+                
+    #             c.showPage()
+    #     except Exception as e:
+    #         print(f"Warning: Could not load feature importance data: {e}")
     
     c.save()
     return pdf_path

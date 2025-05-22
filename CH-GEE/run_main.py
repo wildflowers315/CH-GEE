@@ -102,8 +102,8 @@ def main(type: str):
 
 if __name__ == "__main__":
     # Example usage
-    main('data_preparation')
+    # main('data_preparation')
     # main('height_analysis')
     # main('train_predict')
-    # main('evaluate')
+    main('evaluate')
     
