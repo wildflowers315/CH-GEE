@@ -3,6 +3,9 @@ import subprocess
 from pathlib import Path
 import time
 
+from utils import get_latest_file
+from combine_heights import combine_heights_with_training
+
 # Set parameters
 def main(type: str):
 
@@ -34,40 +37,34 @@ def main(type: str):
         '--max-nodes-rf', '1000',
         '--output-dir', output_dir,
         '--export-training',
-        '--export-predictions',
-        '--scale', '30',
+        # '--export-predictions',
+        '--scale', '10',
+        # '--resample', 'bicubic',
         '--ndvi-threshold', '0.35',
         '--mask-type', 'ALL',
     ]
     if type == 'data_preparation':
         # Convert all arguments to strings
         gee_cmd = [str(arg) for arg in gee_cmd]
-
         # Run the GEE model training and prediction
         print("Running GEE canopy height model...")
         subprocess.run(gee_cmd, check=True)
-
         # # Wait for downloaded files
         # print("Waiting for GEE exports to complete...")
         # time.sleep(60)  # Wait for files to be downloaded
-    
-    # Get the most recent training data, stack, and mask files
-    def get_latest_file(dir_path: str, pattern: str, required: bool = True) -> str:
-        files = [f for f in os.listdir(dir_path) if f.startswith(pattern)]
-        if not files:
-            if required:
-                raise FileNotFoundError(f"No files matching pattern '{pattern}' found in {dir_path}")
-            return None
-        return os.path.join(dir_path, max(files, key=lambda x: os.path.getmtime(os.path.join(dir_path, x))))
+    else:
+        # Get the most recent training data, stack, and mask files
+        training_file = get_latest_file(output_dir, 'training_data')
+        stack_file = get_latest_file(output_dir, 'stack')
+        mask_file = get_latest_file(output_dir, 'forestMask')  # Forest mask is optional
 
-    training_file = get_latest_file(output_dir, 'training_data')
-    stack_file = get_latest_file(output_dir, 'stack')
-    mask_file = get_latest_file(output_dir, 'forestMask')  # Forest mask is optional
+    ref_file = os.path.join(output_dir, 'dchm_09id4.tif')
+    
+    if type == 'height_analysis':
+        combine_heights_with_training(output_dir, ref_file)
 
     if type =='train_predict':
         try:
-
-
             # Build command for local model training and prediction
             train_cmd = [
                 'python', 'train_predict_map.py',
@@ -79,27 +76,26 @@ def main(type: str):
                 '--test-size', '0.2',
                 '--apply-forest-mask'  # Add flag to indicate mask should be used as forest mask
             ]
-
             # Run local training and prediction
             print("\nRunning local model training and prediction...")
             subprocess.run([str(arg) for arg in train_cmd], check=True)
         except FileNotFoundError as e:
             print(f"Error: {e}")
             print("Please ensure all required files have been exported from GEE before running local processing.")
-
+    
     if type == 'evaluate':
+        pred_file = get_latest_file(output_dir, 'predictCH') 
         # Run evaluation with PDF report generation
         eval_cmd = [
             'python', 'evaluate_predictions.py',
-            '--pred', os.path.join(output_dir, 'local_canopy_height_predictions.tif'),
-            '--ref', os.path.join(output_dir, 'dchm_09id4.tif'),
+            '--pred', pred_file,
+            '--ref', ref_file,
             '--output', eval_dir,
             '--pdf',
             '--training', training_file,
             '--merged', stack_file,
             '--forest-mask', mask_file
         ]
-
         print("\nRunning evaluation...")
         subprocess.run([str(arg) for arg in eval_cmd], check=True)
         print("All processing complete!")
@@ -107,5 +103,7 @@ def main(type: str):
 if __name__ == "__main__":
     # Example usage
     # main('data_preparation')
+    # main('height_analysis')
     # main('train_predict')
     main('evaluate')
+    

@@ -144,7 +144,8 @@ def create_2x2_visualization(ref_data, pred_data, diff_data, merged_path, transf
     #     rgb_norm = np.where(mask_3d, rgb_norm, 0)
         
     from evaluation_utils import create_comparison_grid
-    create_comparison_grid(ref_data, pred_data, diff_data, rgb_norm, output_path, forest_mask=forest_mask)
+    create_comparison_grid(ref_data, pred_data, diff_data, rgb_norm, output_path, 
+                           forest_mask=final_mask)
     return output_path
 
 

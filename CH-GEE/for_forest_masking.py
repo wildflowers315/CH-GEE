@@ -140,6 +140,11 @@ def create_forest_mask(
             # Create forest mask based on NDVI threshold
             ndvi_mask = ndvi_median.gte(ndvi_threshold)
     
+    if mask_type in ['CHM', 'ALL']:
+        canopy_ht_2023 = ee.ImageCollection("projects/meta-forest-monitoring-okw37/assets/CanopyHeight") \
+            .filterBounds(aoi).mosaic().select([0],['ht2023'])
+        ch_mask = canopy_ht_2023.updateMask(canopy_ht_2023.gte(1))
+    
     # Determine final mask based on mask_type
     if mask_type == 'DW':
         forest_mask = dw_mask
@@ -147,9 +152,11 @@ def create_forest_mask(
         forest_mask = fnf_mask
     elif mask_type == 'NDVI':
         forest_mask = ndvi_mask
+    elif mask_type == 'CHM':
+        forest_mask = ch_mask
     elif mask_type == 'ALL':
         # Combine all masks (if ANY mask indicates forest, treat as forest)
-        forest_mask = dw_mask.And(fnf_mask).And(ndvi_mask)  # Changed to AND for strictness
+        forest_mask = dw_mask.And(fnf_mask).And(ndvi_mask).And(ch_mask)
     else:  # mask_type == 'none'
         # No mask applied
         forest_mask = ee.Image(1).clip(aoi)

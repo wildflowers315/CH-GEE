@@ -101,7 +101,7 @@ def create_plots(pred: np.ndarray, ref: np.ndarray, metrics: dict, output_dir: s
 def create_comparison_grid(ref_data, pred_data, diff_data, rgb_data, output_path, forest_mask=None):
     """Create 2x2 grid visualization and save to file."""
     fig, axes = plt.subplots(2, 2, figsize=(10, 10))
-    vmax = 40
+    vmax = 35
     # Create masked versions for visualization
     if forest_mask is not None:
         ref_masked = np.ma.masked_where(~forest_mask, ref_data)

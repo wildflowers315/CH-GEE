@@ -96,8 +96,8 @@ def main():
         
         # Create masks for no data values and outliers
         print("\nCreating valid data masks...")
-        pred_mask = (pred_data >= 0) & (pred_data <= 50) & ~np.isnan(pred_data)  # Reasonable height range for trees
-        ref_mask = (ref_data >= 0) & (ref_data <= 50) & ~np.isnan(ref_data)      # Same range for reference
+        pred_mask = (pred_data >= 0) & (pred_data <= 35) & ~np.isnan(pred_data)  # Reasonable height range for trees
+        ref_mask = (ref_data >= 0) & (ref_data <= 35) & (ref_data != -32767) & ~np.isnan(ref_data)  # Exclude -32767 and no data      # Same range for reference
         
         # Combine all masks
         mask = pred_mask & ref_mask
@@ -138,12 +138,24 @@ def main():
         if valid_pixels == 0:
             raise ValueError("No valid pixels in intersection area")
         
-        # Create masked copies for statistics
-        pred_masked = pred_data[mask]
-        ref_masked = ref_data[mask]
+        # ref_data = ref_data[mask]
+        # pred_data = pred_data[mask]
         
+        if mask is not None:
+            ref_masked_2d = np.ma.masked_where(~mask, ref_data)
+            pred_masked_2d = np.ma.masked_where(~mask, pred_data)
+        else:
+            ref_masked_2d = ref_data
+            pred_masked_2d = pred_data
+        
+        ref_masked_2 = ref_masked_2d.compressed() 
+        pred_masked_2 = pred_masked_2d.compressed() 
+        
+        ref_masked = ref_data[mask]
+        pred_masked = pred_data[mask]
+
         # Print statistics
-        print("\nStatistics for valid pixels (filtered to 0-50m range):")
+        print("\nStatistics for valid pixels (filtered to 0-35m range, excluding -32767 and no data):")
         print("Prediction - Min: {:.2f}, Max: {:.2f}, Mean: {:.2f}, Std: {:.2f}".format(
             np.min(pred_masked), np.max(pred_masked), np.mean(pred_masked), np.std(pred_masked)))
         print("Reference - Min: {:.2f}, Max: {:.2f}, Mean: {:.2f}, Std: {:.2f}".format(
@@ -151,18 +163,21 @@ def main():
         
         # Validate data and get statistics
         print("\nValidating data...")
-        validation_info = validate_data(pred_masked, ref_masked)
+        # validation_info = validate_data(pred_masked, ref_masked)
+        validation_info = validate_data(pred_masked_2, ref_masked_2)
         print("Data validation passed:")
         print(f"Prediction range: {validation_info['pred_range'][0]:.2f} to {validation_info['pred_range'][1]:.2f}")
         print(f"Reference range: {validation_info['ref_range'][0]:.2f} to {validation_info['ref_range'][1]:.2f}")
         
         # Calculate metrics
         print("Calculating metrics...")
-        metrics = calculate_metrics(pred_masked, ref_masked)
+        # metrics = calculate_metrics(pred_masked, ref_masked)
+        metrics = calculate_metrics(pred_masked_2, ref_masked_2)
         
         print("Generating visualizations...")
         # Always generate plots for masked data
-        plot_paths = create_plots(pred_masked, ref_masked, metrics, output_dir)
+        # plot_paths = create_plots(pred_masked, ref_masked, metrics, output_dir)
+        plot_paths = create_plots(pred_masked_2, ref_masked_2, metrics, output_dir)
         
         if generate_pdf:
             # Create PDF report with all visualizations
@@ -184,7 +199,7 @@ def main():
             print(f"PDF report saved to: {pdf_path}")
         
         # Print results
-        print("\nEvaluation Results (for heights between 0-50m):")
+        print("\nEvaluation Results (for heights between 0-35m, excluding -32767 and no data):")
         print("-" * 50)
         for metric, value in metrics.items():
             if metric.endswith('(%)'):

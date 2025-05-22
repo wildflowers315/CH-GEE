@@ -48,14 +48,14 @@ def get_alos2_data(
         
         # Basic preprocessing - convert to natural units (from dB)
         # HH and HV bands are stored in dB, convert to natural values for processing
-        hh = ee.Image(10.0).pow(img.select('HH').divide(10.0))
-        hv = ee.Image(10.0).pow(img.select('HV').divide(10.0))
+        hh = ee.Image(10.0).pow(img.select(['HH']).divide(10.0))
+        hv = ee.Image(10.0).pow(img.select(['HV']).divide(10.0))
                 
         # Ratio (HH/HV)
-        ratio = hh.divide(hv).rename('ratio')
+        ratio = hh.divide(hv).rename('ALOS2_ratio')
         
         # Normalized difference (HH-HV)/(HH+HV)
-        ndri = hh.subtract(hv).divide(hh.add(hv)).rename('ndri')
+        ndri = hh.subtract(hv).divide(hh.add(hv)).rename('ALOS2_ndri')
         
         # Combine all bands
         processed = img
@@ -118,7 +118,7 @@ def get_alos2_data(
         
         alos_processed = alos_processed.map(add_texture)
     
-    alos_processed = alos_filtered
+    alos_processed = alos_filtered.select(['HH', 'HV'],['ALOS2_HH', 'ALOS2_HV'])
     # Create median composite
     alos_median = alos_processed.median()
     

@@ -116,7 +116,7 @@ def get_sentinel1_data(
         # .map(mask_border_noise) \
     
     # Calculate temporal statistics
-    s1_median = s1_processed.select(['VV', 'VH']).median()
+    s1_median = s1_processed.select(['VV', 'VH'],['S1_VV','S1_VH']).median()
     s1_median = s1_median.clip(aoi)
     
     return s1_median 

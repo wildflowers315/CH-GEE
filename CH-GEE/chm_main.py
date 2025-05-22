@@ -21,6 +21,7 @@ from sentinel2_source import get_sentinel2_data
 from for_forest_masking import apply_forest_mask, create_forest_mask
 from alos2_source import get_alos2_data
 from new_random_sampling import create_training_data, generate_sampling_sites
+from canopyht_source import get_canopyht_data
 
 def load_aoi(aoi_path: str) -> ee.Geometry:
     """
@@ -75,6 +76,9 @@ def parse_args():
     parser.add_argument('--mask-type', type=str, default='NDVI',
                        choices=['DW', 'FNF', 'NDVI', 'ALL', 'none'],
                        help='Type of forest mask to apply')
+    # resample method
+    parser.add_argument('--resample', type=str, default='bilinear', choices=['bilinear', 'bicubic'],
+                       help='Resampling method for image export')
     # ndvi threshold
     parser.add_argument('--ndvi-threshold', type=float, default=0.3, help='NDVI threshold for forest mask')
     
@@ -117,6 +121,8 @@ def export_training_data(reference_data: ee.FeatureCollection, output_dir: str):
     # Get feature properties as a list of dictionaries
     features = reference_data.getInfo()['features']
     
+
+    
     # Extract properties and coordinates
     data = []
     for feature in features:
@@ -135,38 +141,51 @@ def export_training_data(reference_data: ee.FeatureCollection, output_dir: str):
     os.makedirs(output_dir, exist_ok=True)
     df.to_csv(output_path, index=False)
     print(f"Training data exported to: {output_path}")
+    
+    # json_path = os.path.join(output_dir, f"training_data_b{band_length}_{df_size}.json")
+    # with open(json_path, 'w') as f:
+    #     json.dump(features, f)
     return output_path
 
-def export_training_data_via_ee(reference_data: ee.FeatureCollection, prefix: str):
-    """Export training data as CSV using Earth Engine batch task."""
-    # Create output directory
-    # os.makedirs(output_dir, exist_ok=True)
+def export_featurecollection_to_csv(feature_collection, export_name):
+    """Export a FeatureCollection to CSV via Earth Engine's batch export.
     
-    # Generate a unique filename
-    # timestamp = int(time.time())
+    Args:
+        feature_collection: The ee.FeatureCollection to export
+        export_name: Name for the exported file
+    """
+    # Add longitude and latitude columns
+    feature_collection = feature_collection.map(lambda feature: 
+        feature.set({
+            'longitude': feature.geometry().coordinates().get(0),
+            'latitude': feature.geometry().coordinates().get(1)
+        })
+    )
     
+    # Get property names and convert to Python list
+    property_names = feature_collection.first().propertyNames().getInfo()
+    
+    # Remove system:index from the list if present
+    if 'system:index' in property_names:
+        property_names.remove('system:index')
+        
     # Set up export task
-    export_params = {
-        'collection': reference_data,
-        'description': prefix,
-        'fileNamePrefix': prefix,
-        'folder': 'GEE_exports',
-        'fileFormat': 'CSV',
-        'selectors': ['rh'] + ['.geo']  # Include coordinates and properties
-    }
+    export_task = ee.batch.Export.table.toDrive(
+        collection=feature_collection,
+        description=export_name,
+        fileNamePrefix=export_name,
+        folder='GEE_exports',  # Folder in your Google Drive
+        fileFormat='CSV',
+        selectors=property_names  # All property names
+    )
     
-    # Start the export task
-    task = ee.batch.Export.table.toDrive(**export_params)
-    task.start()
+    # Start the export
+    export_task.start()
     
-    print(f"Training data export started with task ID: {prefix}")
+    print(f"Export started with task ID: {export_task.id}")
     print("The CSV file will be available in your Google Drive once the export completes.")
-    
-    # # Return expected path for later use
-    # output_path = os.path.join(output_dir, f"{filename}.csv")
-    # return output_path
 
-def export_tif_via_ee(image: ee.Image, aoi: ee.Geometry, prefix: str, scale: int):
+def export_tif_via_ee(image: ee.Image, aoi: ee.Geometry, prefix: str, scale: int, resample: str = 'bilinear'):  
     """Export predicted canopy height map as GeoTIFF using Earth Engine export."""
     # Rename the classification band for clarity
     # if 'classification' in image.bandNames().getInfo():
@@ -208,6 +227,8 @@ def export_tif_via_ee(image: ee.Image, aoi: ee.Geometry, prefix: str, scale: int
     # Generate a unique task ID (sanitize prefix and ensure valid characters)
     clean_prefix = ''.join(c for c in prefix if c.isalnum() or c in '_-')
     task_id = f"{clean_prefix}_b{band_count}_s{scale}_p{image_area_ha}"
+    
+    # image = image.resample(resample)  # or 'bicubic'
     
     # Set export parameters
     export_params = {
@@ -255,41 +276,66 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     
     
-    # Get satellite data
+    # Get S1, S2 satellite data
     print("Collecting satellite data...")
     s1 = get_sentinel1_data(aoi, args.year, args.start_date, args.end_date)
     s2 = get_sentinel2_data(aoi, args.year, args.start_date, args.end_date, args.clouds_th)
-    
+    # Import ALOS2 sar data
+    alos2 = get_alos2_data(aoi, args.year, args.start_date, args.end_date,include_texture=False,
+                speckle_filter=False)
+
     # Get terrain data
     try:
         dem = ee.Image("USGS/GMTED2010_FULL").select(['min'], ['elevation']) #"USGS/GMTED2010" was deprecated.
         slope = ee.Terrain.slope(dem)
         aspect = ee.Terrain.aspect(dem)
-        dem_data = dem.addBands(slope).addBands(aspect).select(['elevation', 'slope', 'aspect'])
+        dem_data = dem.addBands(slope).addBands(aspect).select(['elevation', 'slope', 'aspect'], ['GMTED_elevation', 'GMTED_slope', 'GMTED_aspect']).clip(aoi)
     except Exception as e:
+        print(f"Error loading GMTED data: {e}")
+        dem_data = None
+    try:
         # print(f"Downloading SRTM data instead{}")
-        print("Donwloading SRTM data instead")
+        print("Donwloading SRTM data")
         dem = ee.Image("USGS/SRTMGL1_003").select('elevation')
         slope = ee.Terrain.slope(dem)
         aspect = ee.Terrain.aspect(dem)
-        dem_data = dem.addBands(slope).addBands(aspect).select(['elevation', 'slope', 'aspect'])
-
-    # Import ALOS2 sar data
-    alos2 = get_alos2_data(aoi, args.year, args.start_date, args.end_date,include_texture=False,
-                speckle_filter=False)
+        dem_data_SRTM = dem.addBands(slope).addBands(aspect).select(['elevation', 'slope', 'aspect'], ['SRTM_elevation', 'SRTM_slope', 'SRTM_aspect']).clip(aoi)
+        dem_data = dem_data.addBands(dem_data_SRTM)
+    except Exception as e:
+        print(f"Error loading SRTM data: {e}")
+    try:    
+        dem = ee.ImageCollection("JAXA/ALOS/AW3D30/V3_2").mosaic().select('DSM')
+        proj = dem.select(0).projection()
+        slope = ee.Terrain.slope(dem.setDefaultProjection(proj))
+        aspect = ee.Terrain.aspect(dem.setDefaultProjection(proj))
+        # slope = ee.Terrain.slope(dem)
+        # aspect = ee.Terrain.aspect(dem)
+        dem_data_AW3D30 = dem.addBands(slope).addBands(aspect).select(['DSM', 'slope', 'aspect'], ['AW3D30_elevation', 'AW3D30_slope', 'AW3D30_aspect']).clip(aoi)
+        dem_data = dem_data.addBands(dem_data_AW3D30)
+    except Exception as e:
+        print(f"Error loading ALOS AW3D30 data: {e}")
     
-    # ee.ImageCollection("JAXA/ALOS/AW3D30/V3_2") # Uncomment if using ALOS data
+    # Canopy height data
+    canopy_ht = get_canopyht_data(aoi)
+    
     
     # Reproject datasets to the same projection
     s2_projection = s2.projection()
-    # Convert to Float32
-    dem_data = dem_data.reproject(s2_projection).float()  # Convert to Float32
-    s1 = s1.reproject(s2_projection).float()              # Convert to Float32
     s2 = s2.float()                                       # Convert to Float32
-    alos2 = alos2.reproject(s2_projection).float()        # Convert to Float32
+    dem_data = dem_data.float()  # Convert to Float32
+    s1 = s1.float()              # Convert to Float32
+    alos2 = alos2.float()        # Convert to Float32
+    canopy_ht = canopy_ht.float()  # Convert to Float32    
+
+    # Convert to Float32
+    # dem_data = dem_data.reproject(s2_projection).float()  # Convert to Float32
+    # s1 = s1.reproject(s2_projection).float()              # Convert to Float32
+    # alos2 = alos2.reproject(s2_projection).float()        # Convert to Float32
+    # canopy_ht = canopy_ht.reproject(s2_projection).float()  # Convert to Float32    
+    
     
     # Merge datasets
-    merged = s2.addBands(s1).addBands(dem_data).addBands(alos2)
+    merged = s2.addBands(s1).addBands(alos2).addBands(dem_data).addBands(canopy_ht)
     
     # Get predictor names before any masking
     print("Getting band information...")
@@ -332,6 +378,8 @@ def main():
         tileScale=1,
         geometries=True
     )
+    
+    
     # Calculate forest area in hectares
     # mask_area = forest_mask.multiply(ee.Image.pixelArea().divide(10000)).rename('area')
     # forest_area_ha = mask_area.reduceRegion(
@@ -363,12 +411,30 @@ def main():
     # Export training data if requested
     if args.export_training:
         print('Exporting training data and tif through Earth Engine...')
-        training_prefix = f'trainingData{args.mask_type}{ndvi_threshold_percent}'
+        training_prefix = f'training_data_{args.mask_type}{ndvi_threshold_percent}'
         # export_training_data_via_ee(reference_data, training_prefix)
-        training_path = export_training_data(reference_data, args.output_dir)
-        # print(f"Exporting training data as CSV: {training_path}")
-        # Export training data as GeoTIFF
-        export_tif_via_ee(merged, aoi, 'stack', args.scale)
+        export_featurecollection_to_csv(reference_data, training_prefix)
+        print(f"Exporting training data as CSV: {training_prefix}.csv")
+        # try:
+        #     size = reference_data.size().getInfo()
+        #     print(f"Reference data collection contains {size} features")
+        #     if size < 5000:
+        #         training_path = export_training_data(reference_data, args.output_dir)
+        #         print(f"Exporting training data as CSV: {training_path}")
+        #     else:
+        #         print(f"Error exporting training data, then export through ee: {e}")
+        #         # Export reference data as CSV through Earth Engine
+        #         limited_reference_data = reference_data.limit(4500)  # Safe number below the 5000 limit
+        #         training_path = export_training_data(limited_reference_data, args.output_dir)
+        # except Exception as e:
+        #     print(f"Error exporting training data, then export through ee: {e}")
+        #     # Export reference data as CSV through Earth Engine
+        # import sys
+        # sys.exit() 
+        
+        # Export the complete data stack
+        print("Exporting full data stack...")
+        export_tif_via_ee(merged, aoi, 'stack', args.scale, args.resample)
     
     # Train model
     print("Training model...")
@@ -390,11 +456,12 @@ def main():
     if args.export_predictions:
         # prediction_path = os.path.join(args.output_dir, 'predictions.tif')
         print('Exporting via Earth Engine instead')
-        export_tif_via_ee(predictions, aoi, 'predictionCHM', args.scale)
+        export_tif_via_ee(predictions, aoi, 'predictionCHM', args.scale, args.resample)
     
     
     print(f"Exporting forest mask as {forest_mask_prefix}...")
-    export_tif_via_ee(forest_mask, aoi, forest_mask_prefix, args.scale)
+    export_tif_via_ee(forest_mask, merged.geometry(), forest_mask_prefix, args.scale, args.resample)
+    # export_tif_via_ee(forest_mask, aoi, forest_mask_prefix, args.scale)
     
     print("Processing complete.")
 

@@ -49,10 +49,14 @@ def load_training_data(csv_path: str, mask_path: Optional[str] = None) -> Tuple[
             mask_bounds = box(*mask_src.bounds)
             
             # First filter points by mask bounds
-            gdf = gdf[gdf.geometry.within(mask_bounds)]
+            gdf_masked = gdf[gdf.geometry.within(mask_bounds)]
             
-            if len(gdf) == 0:
-                raise ValueError("No training points fall within the mask bounds")
+            if len(gdf_masked) == 0:
+                gdf = gdf
+                printt("Warning: No training points fall within the mask bounds. Using all points.")
+                # raise ValueError("No training points fall within the mask bounds")
+            else:
+                gdf = gdf_masked
             
             # Convert points to pixel coordinates
             pts_pixels = []
@@ -221,12 +225,14 @@ def parse_args():
     # Output settings
     parser.add_argument('--output-dir', type=str, default='chm_outputs',
                        help='Output directory for predictions')
-    parser.add_argument('--output-filename', type=str, default='canopy_height_predictions.tif',
-                       help='Output filename for predictions')
+    # parser.add_argument('--output-filename', type=str, default='canopy_height_predictions.tif',
+    #                    help='Output filename for predictions')
     
     # Model parameters
     parser.add_argument('--test-size', type=float, default=0.2,
                        help='Proportion of data to use for validation')
+    parser.add_argument('--apply-forest-mask', action='store_true',
+                       help='Apply forest mask to predictions')
     
     return parser.parse_args()
 
@@ -255,7 +261,7 @@ def main():
     print("Generating predictions...")
     predictions = model.predict(X_pred)
     print(f"Generated {len(predictions)} predictions")
-    output_path = Path(args.stack).stem.replace('stack_', 'predictCH')
+    output_path = Path(args.output_dir) / f"{Path(args.stack).stem.replace('stack_', 'predictCH')}.tif"
     
     # Save predictions
     # output_path = os.path.join(args.output_dir, output_filename)

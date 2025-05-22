@@ -77,4 +77,4 @@ def get_gedi_data(
     # Rename the quantile band to 'rh'
     # gedi_points = gedi_points.rename(quantile, "rh")
     
-    return gedi_filtered 
+    return gedi_filtered.select('rh') 
